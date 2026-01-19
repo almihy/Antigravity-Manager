@@ -41,18 +41,12 @@ RATE_LIMIT=$(wget -qO- --timeout=10 --header="Accept: application/vnd.github.v3+
 if [ "${RATE_LIMIT:-0}" -gt 5 ]; then
     LATEST_URL=$(wget -qO- --timeout=30 https://api.github.com/repos/lbjlaq/Antigravity-Manager/releases/latest \
         | grep "browser_download_url.*_${ARCH}.deb" \
-        | cut -d '"' -f 4)
+        | cut -d '"' -f 4 || echo "")
 
     if [ -n "$LATEST_URL" ]; then
         LATEST_VERSION=$(echo "$LATEST_URL" | grep -oP 'v[\d.]+' | head -1)
 
-        if [ "$CURRENT_VERSION" = "none" ]; then
-            echo "Installing $LATEST_VERSION..."
-            wget -q --timeout=60 "$LATEST_URL" -O /tmp/ag.deb
-            sudo apt-get update -qq && sudo apt-get install -y /tmp/ag.deb
-            rm -f /tmp/ag.deb
-            sudo rm -rf /var/lib/apt/lists/*
-        elif [ "$CURRENT_VERSION" != "$LATEST_VERSION" ]; then
+        if [ "$CURRENT_VERSION" != "$LATEST_VERSION" ]; then
             echo "Updating $CURRENT_VERSION -> $LATEST_VERSION"
             wget -q --timeout=60 "$LATEST_URL" -O /tmp/ag.deb
             sudo apt-get update -qq && sudo apt-get install -y /tmp/ag.deb
@@ -62,18 +56,34 @@ if [ "${RATE_LIMIT:-0}" -gt 5 ]; then
             echo "Up to date: $CURRENT_VERSION"
         fi
     else
-        echo "Cannot reach GitHub, using cached version"
+        echo "Could not find latest version, using cached: $CURRENT_VERSION"
     fi
 else
-    echo "GitHub API rate limit exceeded (remaining: ${RATE_LIMIT:-0}), using cached version"
+    echo "GitHub API rate limit exceeded or network issue, using cached: $CURRENT_VERSION"
 fi
 
-vncserver -localhost no -geometry ${RESOLUTION} -depth 24 :1
-/usr/share/novnc/utils/novnc_proxy --vnc localhost:5901 --listen ${NOVNC_PORT} &
+# Clean up any leftover lock files
+rm -rf /tmp/.X11-unix /tmp/.X1-lock 2>/dev/null || true
+mkdir -p /tmp/.X11-unix
+chmod 1777 /tmp/.X11-unix
+
+echo "Starting VNC server..."
+Xtigervnc :1 -auth "$HOME/.Xauthority" -geometry "${RESOLUTION}" -depth 24 \
+    -rfbauth "$HOME/.vnc/passwd" -localhost no -SecurityTypes VncAuth \
+    -AlwaysShared -AcceptKeyEvents -AcceptPointerEvents -AcceptSetDesktopSize &
+
+# Give X some time to start
+timeout 10 bash -c 'until xset q &>/dev/null; do sleep 0.5; done' || echo "Xtigervnc startup timeout"
+
+echo "Starting noVNC proxy..."
+websockify --web /usr/share/novnc/ --wrap-mode=ignore 6080 localhost:5901 &
 
 echo "Ready: http://localhost:${NOVNC_PORT}/vnc_lite.html"
 
 while true; do
-    sleep 1 &
-    wait $!
+    if ! pgrep Xtigervnc > /dev/null; then
+        echo "Xtigervnc crashed, exiting..."
+        exit 1
+    fi
+    sleep 5
 done

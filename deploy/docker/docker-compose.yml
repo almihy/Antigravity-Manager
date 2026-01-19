@@ -11,6 +11,7 @@ services:
       - NOVNC_PORT=${NOVNC_PORT:-6080}
     security_opt:
       - seccomp:unconfined
+    shm_size: '2gb'
     volumes:
       - antigravity_data:/home/antigravity/.antigravity_tools
     restart: unless-stopped

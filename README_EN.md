@@ -201,9 +201,20 @@ print(response.choices[0].message.content)
             - **Token Consumption Visualization**: Added an SQLite-based Token statistics persistence module, supporting total and per-account usage views by hour/day/week.
             - **UI/UX & i18n Enhancements**: Optimized chart tooltips for better Dark Mode contrast; completed full translation for all 8 languages and fixed hardcoded legend labels.
             - **Integration Fix**: Fixed an application crash caused by missing plugin configurations found during the manual merge of the original PR code.
+        - **[Optimization] Tsinghua (TUNA) Mirror Support**: Optimized the Dockerfile build process, significantly improving package installation speed in mainland China.
+        - **[Deployment] Official Docker & noVNC Support (PR #851)**:
+            - **Full Containerization**: Provides a complete Docker deployment solution for headless environments, with built-in Openbox WM.
+            - **Web VNC Integration**: Integrated noVNC for direct browser-based GUI access (essential for OAuth flows, with Firefox ESR included).
+            - **Self-Healing Startup**: Optimized `start.sh` with X11 lock file cleanup and service crash monitoring for enterprise-grade stability.
+            - **i18n Readiness**: Built-in CJK fonts ensuring proper rendering of Chinese characters in the Docker environment.
+            - **Performance Tuning**: Standardized `shm_size: 2gb` to eliminate container browser and GUI crashes.
         - **[Core Feature] Fixed Device Fingerprint Synchronization on Account Switch**:
             - **Path Detection Improvement**: Optimized the timing of `storage.json` detection to ensure accurate path acquisition before process closure, compatible with custom data directories.
             - **Automatic Isolation Generation**: For accounts without a bound fingerprint, a unique device identifier is now automatically generated and bound during the first switch, ensuring complete fingerprint isolation between accounts.
+        - **[UI Fix] Fixed Inaccurate Page Size Display on Account Management Page (Issue #754)**:
+            - **Logic Correction**: Forced the default minimum page size to 10, resolving the unintuitive experience where it would automatically change to 5 or 9 in small windows.
+            - **Persistence Enhancement**: Implemented `localStorage` persistence for page size. Manually selected page sizes now permanently lock and override the automatic mode.
+            - **UI Consistency**: Ensured the pagination dropdown always aligns with the actual number of items displayed in the list.
     *   **v3.3.44 (2026-01-19)**:
         - **[Core Stability] Dynamic Thinking Stripping - Complete Fix for Prompt Too Long & Signature Errors**:
             - **Background**: In Deep Thinking mode, long conversations cause two critical errors:
