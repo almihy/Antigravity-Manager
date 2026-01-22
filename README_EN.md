@@ -213,6 +213,11 @@ print(response.choices[0].message.content)
 
 *   **Changelog**:
     *   **v3.3.49 (2026-01-22)**:
+        -   **[Core Fix] Thinking Interruption & 0-Token Defense (Fix Thinking Interruption)**:
+            -   **Issue**: Addressed an issue where Gemini models would unexpectedly terminate the stream after outputting "Thinking" content, causing Claude clients to receive 0-token responses and deadlock with errors.
+            -   **Defense Mechanism**:
+                - **State Tracking**: Real-time monitoring of streaming responses to detect "Thinking-only" states (Thinking sent, Content pending).
+                - **Auto-Recovery**: Upon detecting such interruptions, the system automatically closes the Thinking block, injects a system notice, and simulates valid Usage data to ensure the client terminates the session gracefully.
         -   **[Core Fix] Removed Flash Lite Model to Fix 429 Errors**:
             -   **Issue**: Observed that `gemini-2.5-flash-lite` is frequently returning 429 errors today due to **Upstream Google Container Capacity Exhausted** (MODEL_CAPACITY_EXHAUSTED), rather than standard account quota limits.
             -   **Urgent Fix**: Replaced all internal `gemini-2.5-flash-lite` calls (e.g., background title generation, L3 summary compression) and preset mappings with the more stable `gemini-2.5-flash`.
