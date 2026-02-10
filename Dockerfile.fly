@@ -1,0 +1,88 @@
+# =============================================================================
+# Dockerfile.fly — Optimized for Fly.io deployment (headless mode)
+# Based on docker/Dockerfile but stripped of:
+#   - China mirror logic (USE_MIRROR)
+#   - GTK/WebKit runtime libs (not needed in headless)
+# =============================================================================
+
+# --- Stage 1: Frontend Build ---
+FROM node:20-slim AS frontend-builder
+WORKDIR /app
+
+COPY package*.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --legacy-peer-deps --prefer-offline --no-audit --no-fund
+
+COPY tsconfig.json tsconfig.node.json vite.config.ts tailwind.config.js postcss.config.cjs index.html ./
+COPY public ./public
+COPY src ./src
+COPY src-tauri/icons ./src-tauri/icons
+RUN npm run build
+
+# --- Stage 2: Backend Build ---
+FROM rust:1-slim-bookworm AS backend-builder
+
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    build-essential \
+    curl \
+    wget \
+    file \
+    libssl-dev \
+    libgtk-3-dev \
+    libwebkit2gtk-4.1-dev \
+    libayatana-appindicator3-dev \
+    librsvg2-dev \
+    libsoup-3.0-dev \
+    libjavascriptcoregtk-4.1-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy backend sources
+COPY src-tauri ./src-tauri
+
+# Copy locales for Rust compilation (needed by i18n.rs include_str!)
+COPY src/locales ./src/locales
+
+# Copy frontend dist from builder so Tauri can embed it
+COPY --from=frontend-builder /app/dist ./dist
+
+# Build the Rust backend in release mode
+WORKDIR /app/src-tauri
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/app/src-tauri/target \
+    cargo build --release --bin antigravity_tools && \
+    cp target/release/antigravity_tools /tmp/antigravity_tools
+
+# --- Stage 3: Runtime ---
+FROM debian:bookworm-slim
+WORKDIR /app
+
+# Runtime dependencies
+# NOTE: The Tauri binary dynamically links against GTK/WebKit even in headless
+# mode (the crate graph compiles them in unconditionally). We need these libs.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl3 \
+    libsqlite3-0 \
+    ca-certificates \
+    libgtk-3-0 \
+    libwebkit2gtk-4.1-0 \
+    libayatana-appindicator3-1 \
+    librsvg2-2 \
+    libsoup-3.0-0 \
+    libjavascriptcoregtk-4.1-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy binary and frontend dist
+COPY --from=backend-builder /tmp/antigravity_tools /app/antigravity-tools
+COPY --from=frontend-builder /app/dist /app/dist
+
+# Environment
+ENV ABV_DIST_PATH=/app/dist
+ENV RUST_LOG=info
+
+EXPOSE 8045
+
+ENTRYPOINT ["/app/antigravity-tools", "--headless"]

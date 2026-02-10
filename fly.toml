@@ -1,0 +1,43 @@
+# fly.toml – Fly.io configuration for Antigravity Manager (headless mode)
+# Docs: https://fly.io/docs/reference/configuration/
+
+app = 'sgnl-ai'
+primary_region = 'ams'
+
+[build]
+  dockerfile = 'docker/Dockerfile'
+
+[http_service]
+  internal_port = 8045
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+  [http_service.concurrency]
+    type = 'connections'
+    hard_limit = 200
+    soft_limit = 150
+
+[[vm]]
+  size = 'shared-cpu-2x'
+  memory = '1gb'
+
+[mounts]
+  source = 'antigravity_data'
+  destination = '/root/.antigravity_tools'
+
+[checks]
+  [checks.health]
+    type = 'http'
+    port = 8045
+    path = '/healthz'
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '15s'
+
+[env]
+  RUST_LOG = 'info'
+  ABV_DIST_PATH = '/app/dist'
+  ABV_MAX_BODY_SIZE = '104857600'
