@@ -72,7 +72,8 @@
         "switch_to_spanish": "Tukar ke Bahasa Sepanyol",
         "switch_to_spanish_short": "ES",
         "switch_to_malay": "Tukar ke Bahasa Melayu",
-        "switch_to_malay_short": "MY"
+        "switch_to_malay_short": "MY",
+        "user_token": "Token Pengguna"
     },
     "dashboard": {
         "hello": "Hai, Pengguna 👋",
@@ -108,7 +109,8 @@
         }
     },
     "accounts": {
-        "search_placeholder": "Cari e-mel...",
+        "account": "အကောင့်",
+        "search_placeholder": "အီးမေးလ် ရှာရန်...",
         "all": "Semua",
         "available": "Tersedia",
         "low_quota": "Kuota Rendah",
@@ -143,8 +145,18 @@
         "forbidden": "403",
         "forbidden_badge": "403",
         "forbidden_tooltip": "API mengembalikan 403 Forbidden, akaun tiada kebenaran untuk Gemini Code Assist",
-        "forbidden_msg": "Dilarang, langkau muat semula automatik",
-        "no_data": "Tiada Data",
+        "forbidden_msg": "တားမြစ်ထားသည်၊ အလိုအလျောက် အသစ်တင်ခြင်းကို ကျော်ရန်",
+        "status": {
+            "forbidden": "403 တားမြစ်ထားသည်",
+            "disabled": "အကောင့် ပိတ်ထားသည်",
+            "proxy_disabled": "ပရောက်စီ ပိတ်ထားသည်"
+        },
+        "error_details": "အမှား အသေးစိတ်",
+        "error_status": "အမှား အခြေအနေ",
+        "error_time": "ရှာဖွေတွေ့ရှိချိန်",
+        "view_error": "အကြောင်းပြချက် ကြည့်ရန်",
+        "click_to_verify": "အတည်ပြုရန် နှိပ်ပါ",
+        "no_data": "ဒေတာမရှိပါ",
         "last_used": "Terakhir Digunakan",
         "reset_time": "Masa Reset",
         "switch_to": "Tukar ke akaun ini",
@@ -443,6 +455,12 @@
             "clear_cache_confirm_msg": "Direktori cache berikut akan dikosongkan:",
             "cache_cleared_success": "Cache berjaya dikosongkan, membebaskan {{size}} MB",
             "cache_not_found": "Tiada direktori cache Antigravity ditemui",
+            "debug_logs_title": "Log Nyahpepijat",
+            "debug_logs_enable_desc": "Apabila diaktifkan, rantaian permintaan dan respons penuh akan direkodkan. Disyorkan untuk diaktifkan hanya semasa menyelesaikan masalah.",
+            "debug_logs_desc": "Merekod rantaian penuh: input asal, permintaan v1internal yang ditukar, dan respons huluan. Untuk penyelesaian masalah sahaja, mungkin mengandungi data sensitif.",
+            "debug_log_dir": "Direktori output log nyahpepijat",
+            "debug_log_dir_hint": "Biarkan kosong untuk menggunakan direktori lalai: {{path}}/debug_logs",
+            "debug_log_dir_select": "Pilih direktori output log nyahpepijat",
             "http_api_title": "Perkhidmatan API HTTP",
             "http_api_desc": "Menyediakan antara muka HTTP tempatan untuk program luaran (cth. plugin VS Code).",
             "http_api_enabled": "Aktifkan API HTTP",
@@ -453,6 +471,12 @@
             "http_api_port_invalid": "Nombor port tidak sah (julat: 1024-65535)",
             "http_api_settings_saved": "Tetapan API HTTP disimpan, mulakan semula diperlukan untuk digunakan",
             "http_api_restart_required": "⚠️ Mulakan semula diperlukan untuk digunakan"
+        },
+        "menu": {
+            "title": "Tetapan Paparan Menu",
+            "desc": "Pilih item fungsi untuk dipaparkan di bar menu. Menyembunyikan menu yang jarang digunakan dapat menjimatkan ruang.",
+            "selected_items_note": "Item yang dipilih akan dipaparkan di bar menu atas.",
+            "required": "Wajib"
         },
         "about": {
             "title": "Perihal",
@@ -798,18 +822,9 @@
             "restore_defaults": "Pulihkan Konfigurasi Lalai",
             "reset_all": "Reset Semua"
         },
-        "models": {
-            "flash": "Ultra-pantas",
-            "flash_thinking": "Keupayaan Pemikiran",
-            "pro_high": "Penaakulan Terbaik",
-            "pro_low": "Kuota Rendah",
-            "sonnet": "Penaakulan Kod",
-            "sonnet_thinking": "Rantaian Pemikiran",
-            "opus_thinking": "Pemikiran Terkuat"
-        },
         "router": {
             "title": "Penghalaan Model",
-            "subtitle": "Halakan model mengikut siri atau tambah pemetaan tepat tersuai.\nNota: Model pass-through Claude asli (cth. claude-opus-4-5-thinking) memintas kumpulan siri secara lalai. Gunakan \"Penghalaan Tersuai Pakar\" untuk mengatasi.",
+            "subtitle": "Halakan model mengikut siri atau tambah pemetaan tepat tersuai.\nNota: Model pass-through Claude asli (cth. claude-opus-4-6-thinking) memintas kumpulan siri secara lalai. Gunakan \"Penghalaan Tersuai Pakar\" untuk mengatasi.",
             "subtitle_simple": "Sesuaikan penghalaan model dengan wildcard atau pemetaan tepat",
             "background_task_title": "Model Tugas Latar Belakang",
             "background_task_desc": "Model digunakan untuk tugas latar belakang Claude CLI seperti penjanaan tajuk, ringkasan, dll. (Lalai: gemini-2.5-flash)",
@@ -819,14 +834,10 @@
             "presets_applied": "Pratetap berjaya digunakan",
             "custom_mappings": "Pemetaan Tersuai",
             "group_title": "Kumpulan Siri",
-            "gemini3_group_label": "Gemini 3 (Disyorkan)",
-            "gemini3_option_high": "gemini-3-pro-high (Kualiti Tinggi)",
-            "gemini3_option_low": "gemini-3-pro-low (Seimbang)",
-            "gemini3_option_flash": "gemini-3-flash (Pantas)",
             "groups": {
                 "claude_45": {
-                    "name": "Siri Claude 4.5",
-                    "desc": "Opus 4.5, Sonnet 4.5"
+                    "name": "Siri Claude 4.6 TK",
+                    "desc": "Opus 4.5 TK"
                 },
                 "claude_35": {
                     "name": "Siri Claude 3.5",
@@ -864,7 +875,9 @@
             "original_id": "ID Asal",
             "route_to": "Halakan Ke",
             "select_target_model": "Pilih Model Sasaran",
-            "original_placeholder": "Asal (cth. gpt-4 atau gpt-4*)"
+            "original_placeholder": "Asal (cth. gpt-4 atau gpt-4*)",
+            "custom_mapping_tip": "💡 Sokong input manual sebarang ID model untuk mencuba model yang belum dikeluarkan (cth: claude-opus-4-6).",
+            "custom_mapping_warning": "Perhatian: Bukan semua akaun menyokong model yang belum dikeluarkan"
         },
         "multi_protocol": {
             "title": "Sokongan Pelbagai Protokol",

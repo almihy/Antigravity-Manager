@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Save, Github, User, MessageCircle, ExternalLink, RefreshCw, Heart, Coffee, LayoutDashboard, Users, Network, Activity, BarChart3, Settings as SettingsIcon, Lock, CheckCircle2, Globe } from 'lucide-react';
+import { Save, Github, User, MessageCircle, ExternalLink, RefreshCw, Heart, Coffee, LayoutDashboard, Users, Network, Activity, BarChart3, Settings as SettingsIcon, Lock, CheckCircle2, Globe, Send } from 'lucide-react';
 import { request as invoke } from '../utils/request';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useConfigStore } from '../stores/useConfigStore';
@@ -13,6 +13,8 @@ import { useDebugConsole } from '../stores/useDebugConsole';
 
 import { useTranslation } from 'react-i18next';
 import { isTauri } from '../utils/env';
+import { relaunch } from '@tauri-apps/plugin-process';
+
 import DebugConsole from '../components/debug/DebugConsole';
 import ProxyPoolSettings from '../components/settings/ProxyPoolSettings';
 
@@ -63,7 +65,13 @@ function Settings() {
             monitored_models: []
         },
         pinned_quota_models: {
-            models: ['gemini-3-pro-high', 'gemini-3-flash', 'gemini-3-pro-image', 'claude-sonnet-4-5-thinking']
+            models: ['gemini-3-pro-high', 'gemini-3-flash', 'gemini-3-pro-image', 'claude-opus-4-6-thinking']
+        },
+        cloudflared: {
+            enabled: false,
+            mode: 'quick',
+            port: 7860,
+            use_http2: true
         },
         circuit_breaker: {
             enabled: false,
@@ -94,6 +102,12 @@ function Settings() {
         source?: string;
     } | null>(null);
 
+    // Homebrew Cask state
+    const [isBrewInstalled, setIsBrewInstalled] = useState(false);
+    const [isBrewUpgrading, setIsBrewUpgrading] = useState(false);
+    const [isBrewConfirmOpen, setIsBrewConfirmOpen] = useState(false);
+    const [isBrewSuccessOpen, setIsBrewSuccessOpen] = useState(false);
+
 
     useEffect(() => {
         loadConfig();
@@ -121,6 +135,13 @@ function Settings() {
             })
             .catch(err => console.error('Failed to get auto launch status:', err));
 
+        // 检测是否通过 Homebrew Cask 安装 (仅 Tauri 环境)
+        if (isTauri()) {
+            invoke<boolean>('check_homebrew_installation')
+                .then(installed => setIsBrewInstalled(installed))
+                .catch(err => console.error('Failed to check Homebrew installation:', err));
+        }
+
     }, [loadConfig]);
 
     useEffect(() => {
@@ -137,7 +158,7 @@ function Settings() {
             const proxyEnabled = formData.proxy?.upstream_proxy?.enabled;
             const proxyUrl = formData.proxy?.upstream_proxy?.url?.trim();
             if (proxyEnabled && !proxyUrl) {
-                showToast(t('proxy.config.upstream_proxy.validation_error', '启用上游代理时必须填写代理地址'), 'error');
+                showToast(t('proxy.config.upstream_proxy.validation_error'), 'error');
                 return;
             }
 
@@ -147,7 +168,7 @@ function Settings() {
 
             // 如果修改了代理配置，提示用户需要重启
             if (proxyEnabled && proxyUrl) {
-                showToast(t('proxy.config.upstream_proxy.restart_hint', '代理配置已保存，重启应用后生效'), 'info');
+                showToast(t('proxy.config.upstream_proxy.restart_hint'), 'info');
             }
         } catch (error) {
             showToast(`${t('common.error')}: ${error}`, 'error');
@@ -208,7 +229,7 @@ function Settings() {
             const selected = await open({
                 directory: true,
                 multiple: false,
-                title: t('settings.advanced.debug_log_dir_select', '选择调试日志输出目录'),
+                title: t('settings.advanced.debug_log_dir_select'),
             });
             if (selected && typeof selected === 'string') {
                 setFormData({
@@ -268,6 +289,22 @@ function Settings() {
             showToast(`${t('settings.about.update_check_failed')}: ${error}`, 'error');
         } finally {
             setIsCheckingUpdate(false);
+        }
+    };
+
+    const handleBrewUpgrade = async () => {
+        setIsBrewConfirmOpen(false);
+        setIsBrewUpgrading(true);
+        try {
+            await invoke<string>('brew_upgrade_cask');
+            setUpdateInfo(null);
+            setIsBrewSuccessOpen(true);
+        } catch (error) {
+            const errKey = String(error);
+            const errMsg = t(`settings.about.brew_error_${errKey}`, t('settings.about.brew_upgrade_failed'));
+            showToast(errMsg, 'error');
+        } finally {
+            setIsBrewUpgrading(false);
         }
     };
 
@@ -530,9 +567,9 @@ function Settings() {
 
                                 {/* 菜单显示设置 */}
                                 <div className="border-t border-gray-200 dark:border-base-200 pt-6 mt-6">
-                                    <h3 className="font-medium text-gray-900 dark:text-base-content mb-3">菜单显示设置</h3>
+                                    <h3 className="font-medium text-gray-900 dark:text-base-content mb-3">{t('settings.menu.title')}</h3>
                                     <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-                                        选择要在菜单栏中显示的功能项。隐藏不常用的菜单可以节省空间。
+                                        {t('settings.menu.desc')}
                                     </p>
                                     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                                         {[
@@ -540,7 +577,7 @@ function Settings() {
                                             { path: '/accounts', label: t('nav.accounts'), icon: Users },
                                             { path: '/api-proxy', label: t('nav.proxy'), icon: Network },
                                             { path: '/monitor', label: t('nav.call_records'), icon: Activity },
-                                            { path: '/token-stats', label: t('nav.token_stats', 'Token 统计'), icon: BarChart3 },
+                                            { path: '/token-stats', label: t('nav.token_stats'), icon: BarChart3 },
                                             { path: '/user-token', label: t('nav.user_token', 'User Tokens'), icon: Users },
                                             { path: '/security', label: t('nav.security'), icon: Lock },
                                             { path: '/settings', label: t('nav.settings'), icon: SettingsIcon },
@@ -596,7 +633,7 @@ function Settings() {
 
                                                     {isSettings && (
                                                         <div className="absolute top-2 right-2 text-xs font-bold text-gray-400 bg-gray-200 dark:bg-base-300 px-1.5 py-0.5 rounded">
-                                                            必选
+                                                            {t('settings.menu.required')}
                                                         </div>
                                                     )}
 
@@ -619,7 +656,7 @@ function Settings() {
                                     </div>
                                     <p className="text-xs text-gray-500 dark:text-gray-400 mt-4 flex items-center gap-1.5">
                                         <div className="w-1.5 h-1.5 rounded-full bg-gray-400"></div>
-                                        被选中的项目将显示在顶部菜单栏中
+                                        {t('settings.menu.selected_items_note')}
                                     </p>
                                 </div>
                             </>
@@ -641,10 +678,26 @@ function Settings() {
                                             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{t('settings.account.auto_refresh_desc')}</p>
                                         </div>
                                     </div>
-                                    <div className="flex items-center gap-2 px-3 py-1 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-lg border border-blue-100 dark:border-blue-800/30">
-                                        <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
-                                        <span className="text-[10px] font-bold uppercase tracking-wider leading-none">{t('settings.account.always_on')}</span>
-                                    </div>
+                                    <label className={`relative inline-flex items-center ${formData.quota_protection.enabled ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'}`}>
+                                        <input
+                                            type="checkbox"
+                                            className="sr-only peer"
+                                            checked={formData.auto_refresh}
+                                            disabled={formData.quota_protection.enabled}
+                                            onChange={async (e) => {
+                                                const enabled = e.target.checked;
+                                                const newConfig = { ...formData, auto_refresh: enabled };
+                                                setFormData(newConfig);
+                                                // Hot Save
+                                                try {
+                                                    await saveConfig(newConfig);
+                                                } catch (error) {
+                                                    showToast(`${t('common.error')}: ${error}`, 'error');
+                                                }
+                                            }}
+                                        />
+                                        <div className={`w-11 h-6 bg-gray-200 dark:bg-base-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500 shadow-inner ${formData.quota_protection.enabled ? 'peer-checked:bg-blue-500' : ''}`}></div>
+                                    </label>
                                 </div>
 
                                 <div className="mt-5 pt-5 border-t border-gray-50 dark:border-base-300 flex items-center gap-4 animate-in slide-in-from-top-1 duration-200">
@@ -704,10 +757,19 @@ function Settings() {
                             <div className="group bg-white dark:bg-base-100 rounded-xl p-5 border border-gray-100 dark:border-base-200 hover:border-orange-200 transition-all duration-300 shadow-sm">
                                 <SmartWarmup
                                     config={formData.scheduled_warmup}
-                                    onChange={(newConfig) => setFormData({
-                                        ...formData,
-                                        scheduled_warmup: newConfig
-                                    })}
+                                    onChange={async (newConfig) => {
+                                        const newFormData = {
+                                            ...formData,
+                                            scheduled_warmup: newConfig
+                                        };
+                                        setFormData(newFormData);
+                                        // Hot Save
+                                        try {
+                                            await saveConfig(newFormData);
+                                        } catch (error) {
+                                            showToast(`${t('common.error')}: ${error}`, 'error');
+                                        }
+                                    }}
                                 />
                             </div>
 
@@ -715,10 +777,28 @@ function Settings() {
                             <div className="group bg-white dark:bg-base-100 rounded-xl p-5 border border-gray-100 dark:border-base-200 hover:border-rose-200 transition-all duration-300 shadow-sm">
                                 <QuotaProtection
                                     config={formData.quota_protection}
-                                    onChange={(newConfig) => setFormData({
-                                        ...formData,
-                                        quota_protection: newConfig
-                                    })}
+                                    onChange={async (newConfig) => {
+                                        const updates: any = {
+                                            quota_protection: newConfig
+                                        };
+                                        // 联动逻辑：开启配额保护时，强制开启后台自动刷新 (不仅仅是预热)
+                                        if (newConfig.enabled) {
+                                            updates.auto_refresh = true;
+                                        }
+
+                                        const newFormData = {
+                                            ...formData,
+                                            ...updates
+                                        };
+                                        setFormData(newFormData);
+
+                                        // Hot Save
+                                        try {
+                                            await saveConfig(newFormData);
+                                        } catch (error) {
+                                            showToast(`${t('common.error')}: ${error}`, 'error');
+                                        }
+                                    }}
                                 />
                             </div>
 
@@ -898,19 +978,19 @@ function Settings() {
 
                                 {/* Antigravity 缓存清理 */}
                                 <div className="border-t border-gray-200 dark:border-base-200 pt-4">
-                                    <h3 className="font-medium text-gray-900 dark:text-base-content mb-3">{t('settings.advanced.antigravity_cache_title', 'Antigravity 缓存清理')}</h3>
+                                    <h3 className="font-medium text-gray-900 dark:text-base-content mb-3">{t('settings.advanced.antigravity_cache_title')}</h3>
                                     <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/30 rounded-lg p-3 mb-3">
-                                        <p className="text-sm text-amber-700 dark:text-amber-400">{t('settings.advanced.antigravity_cache_warning', '请确保 Antigravity 应用已完全退出后再执行清理操作。')}</p>
+                                        <p className="text-sm text-amber-700 dark:text-amber-400">{t('settings.advanced.antigravity_cache_warning')}</p>
                                     </div>
                                     <div className="bg-gray-50 dark:bg-base-200 border border-gray-200 dark:border-base-300 rounded-lg p-3 mb-3">
-                                        <p className="text-sm text-gray-600 dark:text-gray-400">{t('settings.advanced.antigravity_cache_desc', '清理 Antigravity 应用的缓存可以解决登录失败、版本验证错误、OAuth 授权失败等问题。')}</p>
+                                        <p className="text-sm text-gray-600 dark:text-gray-400">{t('settings.advanced.antigravity_cache_desc')}</p>
                                     </div>
                                     <div className="flex items-center gap-4">
                                         <button
                                             className="px-4 py-2 border border-orange-300 dark:border-orange-700 text-orange-700 dark:text-orange-400 rounded-lg hover:bg-orange-50 dark:hover:bg-orange-900/20 transition-colors"
                                             onClick={handleOpenClearCacheDialog}
                                         >
-                                            {t('settings.advanced.clear_antigravity_cache', '清理 Antigravity 缓存')}
+                                            {t('settings.advanced.clear_antigravity_cache')}
                                         </button>
                                     </div>
                                 </div>
@@ -922,10 +1002,10 @@ function Settings() {
                                         <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-base-200 rounded-lg border border-gray-100 dark:border-base-300">
                                             <div>
                                                 <div className="font-medium text-gray-900 dark:text-base-content">
-                                                    {t('settings.advanced.debug_logs_title', '调试日志')}
+                                                    {t('settings.advanced.debug_logs_title')}
                                                 </div>
                                                 <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                                                    {t('settings.advanced.debug_logs_enable_desc', '启用后会记录完整请求与响应链路，建议仅在排查问题时开启。')}
+                                                    {t('settings.advanced.debug_logs_enable_desc')}
                                                 </p>
                                             </div>
                                             <label className="relative inline-flex items-center cursor-pointer">
@@ -951,12 +1031,12 @@ function Settings() {
                                             <>
                                                 <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/30 rounded-lg p-3">
                                                     <p className="text-sm text-amber-700 dark:text-amber-400">
-                                                        {t('settings.advanced.debug_logs_desc', '记录完整链路：原始输入、转换后的 v1internal 请求、以及上游响应。仅用于问题排查，可能包含敏感数据。')}
+                                                        {t('settings.advanced.debug_logs_desc')}
                                                     </p>
                                                 </div>
                                                 <div>
                                                     <label className="block text-sm font-medium text-gray-900 dark:text-base-content mb-1">
-                                                        {t('settings.advanced.debug_log_dir', '调试日志输出目录')}
+                                                        {t('settings.advanced.debug_log_dir')}
                                                     </label>
                                                     <div className="flex gap-2">
                                                         <input
@@ -985,7 +1065,7 @@ function Settings() {
                                                         )}
                                                     </div>
                                                     <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
-                                                        {t('settings.advanced.debug_log_dir_hint', `不填写则使用默认目录：${dataDirPath.replace(/\/$/, '')}/debug_logs`)}
+                                                        {t('settings.advanced.debug_log_dir_hint', { path: dataDirPath.replace(/\/$/, '') })}
                                                     </p>
                                                 </div>
                                             </>
@@ -1005,10 +1085,10 @@ function Settings() {
                             <div className="flex items-center justify-between">
                                 <div>
                                     <h2 className="text-lg font-semibold text-gray-900 dark:text-base-content">
-                                        {t('settings.debug.title', '调试控制台')}
+                                        {t('settings.debug.title')}
                                     </h2>
                                     <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                                        {t('settings.debug.desc', '实时查看应用日志，用于调试和问题排查')}
+                                        {t('settings.debug.desc')}
                                     </p>
                                 </div>
                                 <label className="relative inline-flex items-center cursor-pointer">
@@ -1020,7 +1100,7 @@ function Settings() {
                                     />
                                     <div className="w-11 h-6 bg-gray-200 dark:bg-base-300 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500"></div>
                                     <span className="ml-3 text-sm font-medium text-gray-700 dark:text-gray-300">
-                                        {isEnabled ? t('settings.debug.enabled', '已启用') : t('settings.debug.disabled', '已禁用')}
+                                        {isEnabled ? t('settings.debug.enabled') : t('settings.debug.disabled')}
                                     </span>
                                 </label>
                             </div>
@@ -1034,10 +1114,10 @@ function Settings() {
                                 <div className="h-[calc(100vh-320px)] min-h-[400px] flex items-center justify-center bg-gray-50 dark:bg-base-200 rounded-xl border border-gray-200 dark:border-base-300">
                                     <div className="text-center">
                                         <p className="text-gray-500 dark:text-gray-400 text-lg font-medium">
-                                            {t('settings.debug.disabled_hint', '调试控制台已关闭')}
+                                            {t('settings.debug.disabled_hint')}
                                         </p>
                                         <p className="text-gray-400 dark:text-gray-500 text-sm mt-2">
-                                            {t('settings.debug.disabled_desc', '开启后将实时记录应用日志')}
+                                            {t('settings.debug.disabled_desc')}
                                         </p>
                                     </div>
                                 </div>
@@ -1091,9 +1171,9 @@ function Settings() {
                                             <Globe size={18} />
                                         </div>
                                         <div>
-                                            <div className="font-bold text-gray-900 dark:text-gray-100 text-sm">{t('proxy.config.upstream_proxy.title', '全局上游代理 (Global Proxy)')}</div>
+                                            <div className="font-bold text-gray-900 dark:text-gray-100 text-sm">{t('proxy.config.upstream_proxy.title')}</div>
                                             <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 leading-tight max-w-[280px]">
-                                                {t('proxy.config.upstream_proxy.desc_short', '用于无法匹配代理池账号时的通用出口或降级方案。')}
+                                                {t('proxy.config.upstream_proxy.desc_short')}
                                             </p>
                                         </div>
                                     </div>
@@ -1121,13 +1201,13 @@ function Settings() {
                                     <div className="space-y-4 animate-in slide-in-from-top-2 duration-300 relative z-10">
                                         <div className="pt-4 border-t border-gray-50 dark:border-base-300">
                                             <label className="block text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-2.5">
-                                                {t('proxy.config.upstream_proxy.url', '代理地址')}
+                                                {t('proxy.config.upstream_proxy.url')}
                                             </label>
                                             <div className="relative group/input">
                                                 <input
                                                     type="text"
                                                     className="w-full px-4 py-2.5 bg-gray-50 dark:bg-base-200 border border-gray-100 dark:border-base-300 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none text-sm font-medium transition-all shadow-inner"
-                                                    placeholder={t('proxy.config.upstream_proxy.url_placeholder', '例如: http://127.0.0.1:7890')}
+                                                    placeholder={t('proxy.config.upstream_proxy.url_placeholder')}
                                                     value={formData.proxy?.upstream_proxy?.url || ''}
                                                     onChange={(e) => setFormData({
                                                         ...formData,
@@ -1147,7 +1227,7 @@ function Settings() {
                                                 </div>
                                                 <div className="leading-relaxed">
                                                     <span className="font-bold mr-1.5 opacity-80 uppercase tracking-tighter">Tip:</span>
-                                                    {t('proxy.config.upstream_proxy.socks5h_hint', '若需避开上游风控并保留原始域名解析 (Remote DNS)，请手动将协议改为 socks5h://')}
+                                                    {t('proxy.config.upstream_proxy.socks5h_hint')}
                                                 </div>
                                             </div>
                                         </div>
@@ -1174,15 +1254,15 @@ function Settings() {
                                     <div>
                                         <h3 className="text-3xl font-black text-gray-900 dark:text-base-content tracking-tight mb-2">{t('common.app_name', 'Antigravity Tools')}</h3>
                                         <div className="flex items-center justify-center gap-2 text-sm">
-                                            v4.1.11
+                                            v4.1.22
                                             <span className="text-gray-400 dark:text-gray-600">•</span>
                                             <span className="text-gray-500 dark:text-gray-400">{t('settings.branding.subtitle')}</span>
                                         </div>
                                     </div>
                                 </div>
 
-                                {/* Cards Grid - Now 3 columns */}
-                                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 w-full max-w-5xl px-4">
+                                {/* Cards Grid - Now 5 columns */}
+                                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 w-full max-w-6xl px-4">
                                     {/* Author Card */}
                                     <div className="bg-white dark:bg-base-100 p-4 rounded-2xl border border-gray-100 dark:border-base-300 shadow-sm hover:shadow-md hover:border-blue-200 dark:hover:border-blue-800 transition-all group flex flex-col items-center text-center gap-3">
                                         <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl group-hover:scale-110 transition-transform duration-300">
@@ -1204,6 +1284,22 @@ function Settings() {
                                             <div className="font-bold text-gray-900 dark:text-base-content">Ctrler</div>
                                         </div>
                                     </div>
+
+                                    {/* Telegram Card */}
+                                    <a
+                                        href="https://t.me/AntigravityManager"
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="bg-white dark:bg-base-100 p-4 rounded-2xl border border-gray-100 dark:border-base-300 shadow-sm hover:shadow-md hover:border-sky-200 dark:hover:border-sky-800 transition-all group flex flex-col items-center text-center gap-3 cursor-pointer"
+                                    >
+                                        <div className="p-3 bg-sky-50 dark:bg-sky-900/20 rounded-xl group-hover:scale-110 transition-transform duration-300">
+                                            <Send className="w-6 h-6 text-sky-500" />
+                                        </div>
+                                        <div>
+                                            <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold mb-1">{t('settings.about.telegram')}</div>
+                                            <div className="font-bold text-gray-900 dark:text-base-content whitespace-nowrap overflow-hidden text-ellipsis w-full">Channel</div>
+                                        </div>
+                                    </a>
 
                                     {/* GitHub Card */}
                                     <a
@@ -1271,15 +1367,33 @@ function Settings() {
                                                     <div className="text-sm text-orange-600 dark:text-orange-400 font-medium">
                                                         {t('settings.about.new_version_available', { version: updateInfo.latestVersion })}
                                                     </div>
-                                                    <a
-                                                        href={updateInfo.downloadUrl}
-                                                        target="_blank"
-                                                        rel="noreferrer"
-                                                        className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg transition-colors flex items-center gap-1.5"
-                                                    >
-                                                        {t('settings.about.download_update')}
-                                                        <ExternalLink className="w-3.5 h-3.5" />
-                                                    </a>
+                                                    <div className="flex items-center gap-2">
+                                                        {isBrewInstalled && (
+                                                            <button
+                                                                onClick={() => setIsBrewConfirmOpen(true)}
+                                                                disabled={isBrewUpgrading}
+                                                                className="px-4 py-1.5 bg-green-500 hover:bg-green-600 disabled:bg-gray-300 dark:disabled:bg-gray-700 text-white text-sm rounded-lg transition-colors flex items-center gap-1.5 disabled:cursor-not-allowed"
+                                                            >
+                                                                {isBrewUpgrading ? (
+                                                                    <>
+                                                                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                                                        {t('settings.about.brew_upgrading')}
+                                                                    </>
+                                                                ) : (
+                                                                    t('settings.about.brew_upgrade')
+                                                                )}
+                                                            </button>
+                                                        )}
+                                                        <a
+                                                            href={updateInfo.downloadUrl}
+                                                            target="_blank"
+                                                            rel="noreferrer"
+                                                            className="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm rounded-lg transition-colors flex items-center gap-1.5"
+                                                        >
+                                                            {t('settings.about.download_update')}
+                                                            <ExternalLink className="w-3.5 h-3.5" />
+                                                        </a>
+                                                    </div>
                                                 </div>
                                             ) : (
                                                 <div className="text-sm text-green-600 dark:text-green-400 font-medium">
@@ -1314,9 +1428,9 @@ function Settings() {
                 {/* Antigravity Cache Clear Modal */}
                 <ModalDialog
                     isOpen={isClearCacheOpen}
-                    title={t('settings.advanced.clear_cache_confirm_title', '确认清理 Antigravity 缓存')}
+                    title={t('settings.advanced.clear_cache_confirm_title')}
                     type="confirm"
-                    confirmText={isClearingCache ? t('common.clearing', '清理中...') : t('common.clear')}
+                    confirmText={isClearingCache ? t('common.clearing') : t('common.clear')}
                     cancelText={t('common.cancel')}
                     isDestructive={true}
                     onConfirm={confirmClearAntigravityCache}
@@ -1324,7 +1438,7 @@ function Settings() {
                 >
                     <div className="space-y-3">
                         <p className="text-sm text-gray-600 dark:text-gray-400">
-                            {t('settings.advanced.clear_cache_confirm_msg', '将清理以下缓存目录：')}
+                            {t('settings.advanced.clear_cache_confirm_msg')}
                         </p>
                         {cachePaths.length > 0 ? (
                             <div className="bg-gray-50 dark:bg-base-200 rounded-lg p-3 max-h-40 overflow-y-auto">
@@ -1337,16 +1451,82 @@ function Settings() {
                         ) : (
                             <div className="bg-gray-50 dark:bg-base-200 rounded-lg p-3">
                                 <p className="text-xs text-gray-500 dark:text-gray-400">
-                                    {t('settings.advanced.cache_not_found', '未找到 Antigravity 缓存目录')}
+                                    {t('settings.advanced.cache_not_found')}
                                 </p>
                             </div>
                         )}
                         <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/30 rounded-lg p-2">
                             <p className="text-xs text-amber-700 dark:text-amber-400">
-                                {t('settings.advanced.antigravity_cache_warning', '请确保 Antigravity 应用已完全退出后再执行清理操作。')}
+                                {t('settings.advanced.antigravity_cache_warning')}
                             </p>
                         </div>
                     </div>
+                </ModalDialog>
+
+                {/* Homebrew Upgrade Confirm Modal */}
+                <ModalDialog
+                    isOpen={isBrewConfirmOpen}
+                    title={t('settings.about.brew_confirm_title')}
+                    type="confirm"
+                    confirmText={t('settings.about.brew_confirm_btn')}
+                    cancelText={t('common.cancel')}
+                    onConfirm={handleBrewUpgrade}
+                    onCancel={() => setIsBrewConfirmOpen(false)}
+                >
+                    <div className="space-y-3">
+                        <p className="text-sm text-gray-600 dark:text-gray-400">
+                            {t('settings.about.brew_confirm_desc')}
+                        </p>
+                        <div className="bg-gray-50 dark:bg-base-200 rounded-lg p-3">
+                            <div className="flex items-center justify-between gap-2">
+                                <code className="text-xs text-gray-700 dark:text-gray-300 break-all">brew upgrade --cask antigravity-tools</code>
+                                <button
+                                    className="shrink-0 px-2 py-1 text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 border border-gray-200 dark:border-base-300 rounded hover:bg-gray-100 dark:hover:bg-base-300 transition-colors"
+                                    onClick={() => {
+                                        navigator.clipboard.writeText('brew upgrade --cask antigravity-tools');
+                                        showToast(t('common.copied', 'Copied'), 'success');
+                                    }}
+                                >
+                                    {t('common.copy', 'Copy')}
+                                </button>
+                            </div>
+                        </div>
+                        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/30 rounded-lg p-3">
+                            <p className="text-xs text-amber-700 dark:text-amber-400 mb-2">{t('settings.about.brew_quarantine_hint')}</p>
+                            <div className="flex items-center justify-between gap-2">
+                                <code className="text-xs text-amber-800 dark:text-amber-300 break-all">sudo xattr -rd com.apple.quarantine "/Applications/Antigravity Tools.app"</code>
+                                <button
+                                    className="shrink-0 px-2 py-1 text-xs text-amber-600 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-200 border border-amber-200 dark:border-amber-700 rounded hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors"
+                                    onClick={() => {
+                                        navigator.clipboard.writeText('sudo xattr -rd com.apple.quarantine "/Applications/Antigravity Tools.app"');
+                                        showToast(t('common.copied', 'Copied'), 'success');
+                                    }}
+                                >
+                                    {t('common.copy', 'Copy')}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </ModalDialog>
+
+                {/* Homebrew Upgrade Success Modal */}
+                <ModalDialog
+                    isOpen={isBrewSuccessOpen}
+                    title={t('settings.about.brew_success_title')}
+                    type="success"
+                    confirmText={t('settings.about.brew_restart_btn')}
+                    onConfirm={async () => {
+                        try {
+                            await relaunch();
+                        } catch {
+                            setIsBrewSuccessOpen(false);
+                            showToast(t('settings.about.brew_restart_failed'), 'error');
+                        }
+                    }}
+                >
+                    <p className="text-sm text-gray-600 dark:text-gray-400">
+                        {t('settings.about.brew_upgrade_success')}
+                    </p>
                 </ModalDialog>
 
                 {/* Support Modal */}

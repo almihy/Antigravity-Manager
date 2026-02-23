@@ -46,6 +46,9 @@ pub struct Account {
     /// [NEW] 验证阻止原因
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation_blocked_reason: Option<String>,
+    /// [NEW] 验证链接 URL (#1522)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_url: Option<String>,
     pub created_at: i64,
     pub last_used: i64,
     /// 绑定的代理 ID (None = 使用全局代理池)
@@ -80,6 +83,7 @@ impl Account {
             validation_blocked: false,
             validation_blocked_until: None,
             validation_blocked_reason: None,
+            validation_url: None,
             created_at: now,
             last_used: now,
             proxy_id: None,
@@ -115,6 +119,9 @@ pub struct AccountSummary {
     pub disabled: bool,
     #[serde(default)]
     pub proxy_disabled: bool,
+    /// 受保护的模型列表 [NEW] 供 UI 显示锁定图标
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    pub protected_models: HashSet<String>,
     pub created_at: i64,
     pub last_used: i64,
 }
