@@ -42,6 +42,7 @@ import {
     X,
     Check,
     Clock,
+    Bot,
 } from 'lucide-react';
 import { Account } from '../../types/account';
 import { useTranslation } from 'react-i18next';
@@ -50,6 +51,7 @@ import { cn } from '../../utils/cn';
 import { useConfigStore } from '../../stores/useConfigStore';
 import { QuotaItem } from './QuotaItem';
 import { MODEL_CONFIG, sortModels } from '../../config/modelConfig';
+import { getValidationBlockedStatusLabel } from './accountValidationStatus';
 
 // ============================================================================
 // 类型定义
@@ -309,6 +311,7 @@ function AccountRowContent({
 }: AccountRowContentProps) {
     const { t } = useTranslation();
     const { config, showAllQuotas } = useConfigStore();
+    const validationBlockedLabel = getValidationBlockedStatusLabel(account.validation_blocked_reason, t);
 
     // 自定义标签编辑状态
     const [isEditingLabel, setIsEditingLabel] = useState(false);
@@ -345,7 +348,7 @@ function AccountRowContent({
         (showAllQuotas
             ? (account.quota?.models || []).map(m => {
                 const config = MODEL_CONFIG[m.name.toLowerCase()];
-                const label = config?.i18nKey ? t(config.i18nKey) : (config?.shortLabel || config?.label || m.name);
+                const label = m.display_name || (config?.i18nKey ? t(config.i18nKey) : (config?.shortLabel || config?.label || m.name));
                 return {
                     id: m.name.toLowerCase(),
                     label: label,
@@ -353,17 +356,18 @@ function AccountRowContent({
                     data: m
                 };
             })
-            : pinnedModels.filter(modelId => MODEL_CONFIG[modelId]).map(modelId => {
+            : pinnedModels.map(modelId => {
+                const m = account.quota?.models.find(m => m.name === modelId || getModelAliases(modelId).includes(m.name.toLowerCase()));
                 const config = MODEL_CONFIG[modelId];
-                const aliases = getModelAliases(modelId);
-                const label = config.i18nKey ? t(config.i18nKey) : (config.shortLabel || config.label);
+                if (!config && !m) return null; // Safe guard for unknown models that aren't fetched
+                const label = m?.display_name || (config?.i18nKey ? t(config.i18nKey) : (config?.shortLabel || config?.label || modelId));
                 return {
                     id: modelId,
                     label: label,
-                    protectedKey: config.protectedKey,
-                    data: account.quota?.models.find(m => aliases.includes(m.name.toLowerCase()))
+                    protectedKey: config?.protectedKey || modelId,
+                    data: m
                 };
-            })
+            }).filter(Boolean) as any[]
         ).filter(m => {
             // 过滤特定的 Claude/Gemini 思考变体 (在列表页隐藏)
             const isHiddenThinking = m.id.includes('thinking');
@@ -434,7 +438,7 @@ function AccountRowContent({
                         {account.validation_blocked && (
                             <span className="px-2 py-0.5 rounded-md bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-400 text-[10px] font-bold flex items-center gap-1 shadow-sm border border-amber-200/50">
                                 <Clock className="w-2.5 h-2.5" />
-                                <span>{t('accounts.status.validation_required')}</span>
+                                <span>{validationBlockedLabel}</span>
                             </span>
                         )}
 
@@ -521,7 +525,7 @@ function AccountRowContent({
                                 "text-[11px] font-bold",
                                 account.validation_blocked ? "text-amber-700/80 dark:text-amber-400" : "text-red-700/80 dark:text-red-400"
                             )}>
-                                {account.validation_blocked ? t('accounts.status.validation_required') : (isDisabled ? t('accounts.status.disabled') : t('accounts.forbidden_msg'))}
+                                {account.validation_blocked ? validationBlockedLabel : (isDisabled ? t('accounts.status.disabled') : t('accounts.forbidden_msg'))}
                             </span>
                         </div>
                         <div className={cn(
@@ -550,7 +554,7 @@ function AccountRowContent({
                                     percentage={modelData?.percentage || 0}
                                     resetTime={modelData?.reset_time}
                                     isProtected={isModelProtected(account.protected_models, model.protectedKey)}
-                                    Icon={MODEL_CONFIG[model.id]?.Icon}
+                                    Icon={MODEL_CONFIG[model.id]?.Icon || Bot}
                                 />
                             );
                         })}

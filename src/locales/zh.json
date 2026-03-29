@@ -158,6 +158,8 @@
             "disabled": "账号已禁用",
             "proxy_disabled": "反代已禁用",
             "validation_required": "账号需验证",
+            "risk_controlled": "风控/限流",
+            "oauth_reauth_required": "授权异常",
             "violation_blocked": "由于违规被禁用"
         },
         "error_details": "错误详情",
@@ -167,6 +169,8 @@
         "click_to_verify": "点击去验证",
         "copy_validation_url": "复制验证链接",
         "validation_url_copied": "验证链接已复制到剪贴板",
+        "go_to_appeal": "前往申诉",
+        "copy_appeal_url": "复制申诉链接",
         "fix_guide": {
             "title": "终端一键自救指南 (解决部分 403 拦截)",
             "step1_title": "🚀 终极杀招（最快方案）",
