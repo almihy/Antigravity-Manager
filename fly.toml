@@ -2,7 +2,7 @@
 # Docs: https://fly.io/docs/reference/configuration/
 
 app = 'sgnl-ai'
-primary_region = 'ams'
+primary_region = 'cdg'
 
 [build]
   dockerfile = 'docker/Dockerfile'
