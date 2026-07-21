@@ -1,15 +1,15 @@
+mod commands;
+pub mod constants;
+pub mod error;
 mod models;
 mod modules;
-mod commands;
+mod proxy; // Proxy service module
 mod utils;
-mod proxy;  // Proxy service module
-pub mod error;
-pub mod constants;
 
-use tauri::Manager;
 use modules::logger;
-use tracing::{info, warn, error};
 use std::sync::Arc;
+use tauri::Manager;
+use tracing::{error, info, warn};
 
 #[derive(Clone, Copy)]
 struct AppRuntimeFlags {
@@ -18,7 +18,12 @@ struct AppRuntimeFlags {
 
 fn env_flag_enabled(name: &str) -> bool {
     std::env::var(name)
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -49,6 +54,14 @@ fn should_enable_tray() -> bool {
     }
 
     true
+}
+
+fn credential_state(value: &str) -> &'static str {
+    if value.trim().is_empty() {
+        "not set"
+    } else {
+        "set"
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -83,7 +96,10 @@ fn increase_nofile_limit() {
         };
 
         if libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) == 0 {
-            info!("Current open file limit: soft={}, hard={}", rl.rlim_cur, rl.rlim_max);
+            info!(
+                "Current open file limit: soft={}, hard={}",
+                rl.rlim_cur, rl.rlim_max
+            );
 
             // Attempt to increase to 4096 or maximum hard limit
             let target = 4096.min(rl.rlim_max);
@@ -99,6 +115,61 @@ fn increase_nofile_limit() {
     }
 }
 
+/// Windows FFI calls to disable Efficiency Mode (EcoQoS / Power Throttling)
+/// to prevent background freezes when minimized/hidden.
+#[cfg(target_os = "windows")]
+mod windows_api {
+    type Bool = i32;
+    type Handle = *mut std::ffi::c_void;
+
+    #[repr(C)]
+    struct ProcessPowerThrottlingState {
+        version: u32,
+        control_mask: u32,
+        state_mask: u32,
+    }
+
+    #[link(name = "Kernel32")]
+    extern "system" {
+        fn GetCurrentProcess() -> Handle;
+        fn SetProcessInformation(
+            h_process: Handle,
+            process_information_class: u32,
+            process_information: *mut std::ffi::c_void,
+            process_information_size: u32,
+        ) -> Bool;
+    }
+
+    pub fn disable_efficiency_mode() {
+        unsafe {
+            let mut state = ProcessPowerThrottlingState {
+                version: 1,        // PROCESS_POWER_THROTTLING_STATE::VERSION
+                control_mask: 0x1, // PROCESS_POWER_THROTTLING_CURRENT_EXECUTION_SPEED
+                state_mask: 0,
+            };
+            let process_handle = GetCurrentProcess();
+            // ProcessPowerThrottling = 4
+            let res = SetProcessInformation(
+                process_handle,
+                4,
+                &mut state as *mut _ as *mut std::ffi::c_void,
+                std::mem::size_of::<ProcessPowerThrottlingState>() as u32,
+            );
+            if res == 0 {
+                let err = std::io::Error::last_os_error();
+                tracing::warn!(
+                    "Failed to disable Windows Power Throttling / EcoQoS: {}",
+                    err
+                );
+            } else {
+                tracing::info!(
+                    "Successfully disabled Windows Power Throttling / EcoQoS for the process."
+                );
+            }
+        }
+    }
+}
+
 // Test command
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -107,6 +178,10 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Disable Windows background throttling/EcoQoS
+    #[cfg(target_os = "windows")]
+    windows_api::disable_efficiency_mode();
+
     // Check for headless mode
     let args: Vec<String> = std::env::args().collect();
     let is_headless = args.iter().any(|arg| arg == "--headless");
@@ -130,7 +205,7 @@ pub fn run() {
     if let Err(e) = modules::security_db::init_db() {
         error!("Failed to initialize security database: {}", e);
     }
-    
+
     // Initialize user token database
     if let Err(e) = modules::user_token_db::init_db() {
         error!("Failed to initialize user token database: {}", e);
@@ -238,9 +313,9 @@ pub fn run() {
                     info!("--------------------------------------------------");
                     info!("🚀 Headless mode proxy service starting...");
                     info!("📍 Port: {}", config.proxy.port);
-                    info!("🔑 Current API Key: {}", config.proxy.api_key);
+                    info!("🔑 Current API Key: {}", credential_state(&config.proxy.api_key));
                     if let Some(ref pwd) = config.proxy.admin_password {
-                        info!("🔐 Web UI Password: {}", pwd);
+                        info!("🔐 Web UI Password: {}", credential_state(pwd));
                     } else {
                         info!("🔐 Web UI Password: (Same as API Key)");
                     }
@@ -302,13 +377,13 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            let _ = app.get_webview_window("main")
-                .map(|window| {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                    #[cfg(target_os = "macos")]
-                    app.set_activation_policy(tauri::ActivationPolicy::Regular).unwrap_or(());
-                });
+            let _ = app.get_webview_window("main").map(|window| {
+                let _ = window.show();
+                let _ = window.set_focus();
+                #[cfg(target_os = "macos")]
+                app.set_activation_policy(tauri::ActivationPolicy::Regular)
+                    .unwrap_or(());
+            });
         }))
         .manage(commands::proxy::ProxyServiceState::new())
         .manage(commands::cloudflared::CloudflaredState::new())
@@ -358,7 +433,8 @@ pub fn run() {
                 if let Ok(config) = modules::config::load_app_config() {
                     let state = handle.state::<commands::proxy::ProxyServiceState>();
                     let cf_state = handle.state::<commands::cloudflared::CloudflaredState>();
-                    let integration = crate::modules::integration::SystemManager::Desktop(handle.clone());
+                    let integration =
+                        crate::modules::integration::SystemManager::Desktop(handle.clone());
 
                     // 1. 确保管理后台开启
                     if let Err(e) = commands::proxy::ensure_admin_server(
@@ -366,10 +442,15 @@ pub fn run() {
                         &state,
                         integration.clone(),
                         Arc::new(cf_state.inner().clone()),
-                    ).await {
+                    )
+                    .await
+                    {
                         error!("Failed to start admin server: {}", e);
                     } else {
-                        info!("Admin server (port {}) started successfully", config.proxy.port);
+                        info!(
+                            "Admin server (port {}) started successfully",
+                            config.proxy.port
+                        );
                     }
 
                     // 2. 自动启动转发逻辑
@@ -379,7 +460,9 @@ pub fn run() {
                             &state,
                             integration,
                             Arc::new(cf_state.inner().clone()),
-                        ).await {
+                        )
+                        .await
+                        {
                             error!("Failed to auto-start proxy service: {}", e);
                         } else {
                             info!("Proxy service auto-started successfully");
@@ -471,9 +554,11 @@ pub fn run() {
             commands::show_main_window,
             commands::set_window_theme,
             commands::get_antigravity_path,
+            commands::get_antigravity_cli_path,
             commands::get_antigravity_args,
             commands::check_for_updates,
             commands::check_homebrew_installation,
+            commands::check_appimage_installation,
             commands::brew_upgrade_cask,
             commands::get_update_settings,
             commands::save_update_settings,
@@ -540,6 +625,7 @@ pub fn run() {
             proxy::cli_sync::execute_cli_restore,
             proxy::cli_sync::get_cli_config_content,
             proxy::opencode_sync::get_opencode_sync_status,
+            proxy::opencode_sync::get_canonical_families,
             proxy::opencode_sync::execute_opencode_sync,
             proxy::opencode_sync::execute_opencode_restore,
             proxy::opencode_sync::get_opencode_config_content,
@@ -585,6 +671,9 @@ pub fn run() {
             commands::user_token::renew_user_token,
             commands::user_token::get_token_ip_bindings,
             commands::user_token::get_user_token_summary,
+            commands::query_transit_info,
+            // Patch commands
+            commands::patch_agy_binary,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -593,23 +682,30 @@ pub fn run() {
                 // Handle app exit - cleanup background tasks
                 tauri::RunEvent::Exit => {
                     tracing::info!("Application exiting, cleaning up background tasks...");
-                    if let Some(state) = app_handle.try_state::<crate::commands::proxy::ProxyServiceState>() {
+                    if let Some(state) =
+                        app_handle.try_state::<crate::commands::proxy::ProxyServiceState>()
+                    {
                         tauri::async_runtime::block_on(async {
                             // Use timeout-based read() instead of try_read() to handle lock contention
                             match tokio::time::timeout(
                                 std::time::Duration::from_secs(3),
-                                state.instance.read()
-                            ).await {
+                                state.instance.read(),
+                            )
+                            .await
+                            {
                                 Ok(guard) => {
                                     if let Some(instance) = guard.as_ref() {
                                         // Use graceful_shutdown with 2s timeout for task cleanup
-                                        instance.token_manager
+                                        instance
+                                            .token_manager
                                             .graceful_shutdown(std::time::Duration::from_secs(2))
                                             .await;
                                     }
                                 }
                                 Err(_) => {
-                                    tracing::warn!("Lock acquisition timed out after 3s, forcing exit");
+                                    tracing::warn!(
+                                        "Lock acquisition timed out after 3s, forcing exit"
+                                    );
                                 }
                             }
                         });
@@ -622,7 +718,9 @@ pub fn run() {
                         let _ = window.show();
                         let _ = window.unminimize();
                         let _ = window.set_focus();
-                        app_handle.set_activation_policy(tauri::ActivationPolicy::Regular).unwrap_or(());
+                        app_handle
+                            .set_activation_policy(tauri::ActivationPolicy::Regular)
+                            .unwrap_or(());
                     }
                 }
                 _ => {}

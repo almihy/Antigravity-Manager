@@ -1,8 +1,8 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use tokio::sync::RwLock;
-use tauri::Emitter;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::Emitter;
+use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyRequestLog {
@@ -11,18 +11,19 @@ pub struct ProxyRequestLog {
     pub method: String,
     pub url: String,
     pub status: u16,
-    pub duration: u64, // ms
+    pub duration: u64,                // ms
     pub model: Option<String>,        // 客户端请求的模型名
     pub mapped_model: Option<String>, // 实际路由后使用的模型名
     pub account_email: Option<String>,
-    pub client_ip: Option<String>,    // 客户端 IP 地址
+    pub client_ip: Option<String>, // 客户端 IP 地址
     pub error: Option<String>,
     pub request_body: Option<String>,
     pub response_body: Option<String>,
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
-    pub protocol: Option<String>,     // 协议类型: "openai", "anthropic", "gemini"
-    pub username: Option<String>,     // User token username
+    pub cached_tokens: Option<u32>,
+    pub protocol: Option<String>, // 协议类型: "openai", "anthropic", "gemini"
+    pub username: Option<String>, // User token username
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -48,8 +49,8 @@ impl ProxyMonitor {
         }
 
         // Auto cleanup old logs (keep last 30 days)
-        tokio::spawn(async {
-            match crate::modules::proxy_db::cleanup_old_logs(30) {
+        tokio::task::spawn_blocking(
+            move || match crate::modules::proxy_db::cleanup_old_logs(30) {
                 Ok(deleted) => {
                     if deleted > 0 {
                         tracing::info!("Auto cleanup: removed {} old logs (>30 days)", deleted);
@@ -58,8 +59,8 @@ impl ProxyMonitor {
                 Err(e) => {
                     tracing::error!("Failed to cleanup old logs: {}", e);
                 }
-            }
-        });
+            },
+        );
 
         Self {
             logs: RwLock::new(VecDeque::with_capacity(max_logs)),
@@ -79,15 +80,16 @@ impl ProxyMonitor {
     }
 
     pub async fn log_request(&self, log: ProxyRequestLog) {
-        if let (Some(account), Some(input), Some(output)) = (
-            &log.account_email,
-            log.input_tokens,
-            log.output_tokens,
-        ) {
+        if let (Some(account), Some(input), Some(output)) =
+            (&log.account_email, log.input_tokens, log.output_tokens)
+        {
             let model = log.model.clone().unwrap_or_else(|| "unknown".to_string());
             let account = account.clone();
-            tokio::spawn(async move {
-                if let Err(e) = crate::modules::token_stats::record_usage(&account, &model, input, output) {
+            let cached = log.cached_tokens.unwrap_or(0);
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = crate::modules::token_stats::record_usage(
+                    &account, &model, input, output, cached,
+                ) {
                     tracing::debug!("Failed to record token stats: {}", e);
                 }
             });
@@ -119,7 +121,7 @@ impl ProxyMonitor {
 
         // Save to DB
         let log_to_save = log.clone();
-        tokio::spawn(async move {
+        tokio::task::spawn_blocking(move || {
             if let Err(e) = crate::modules::proxy_db::save_log(&log_to_save) {
                 tracing::error!("Failed to save proxy log to DB: {}", e);
             }
@@ -142,19 +144,7 @@ impl ProxyMonitor {
                 };
 
                 if let Err(e) = crate::modules::security_db::save_ip_access_log(&security_log) {
-                     tracing::error!("Failed to save security log: {}", e);
-                }
-            }
-
-            // Record token stats if available
-            if let (Some(account), Some(input), Some(output)) = (
-                &log_to_save.account_email,
-                log_to_save.input_tokens,
-                log_to_save.output_tokens,
-            ) {
-                let model = log_to_save.model.clone().unwrap_or_else(|| "unknown".to_string());
-                if let Err(e) = crate::modules::token_stats::record_usage(account, &model, input, output) {
-                    tracing::debug!("Failed to record token stats: {}", e);
+                    tracing::error!("Failed to save security log: {}", e);
                 }
             }
         });
@@ -177,6 +167,7 @@ impl ProxyMonitor {
                 response_body: None, // Don't send body in event
                 input_tokens: log.input_tokens,
                 output_tokens: log.output_tokens,
+                cached_tokens: log.cached_tokens,
                 protocol: log.protocol.clone(),
                 username: log.username.clone(),
             };
@@ -186,9 +177,8 @@ impl ProxyMonitor {
 
     pub async fn get_logs(&self, limit: usize) -> Vec<ProxyRequestLog> {
         // Try to get from DB first for true history
-        let db_result = tokio::task::spawn_blocking(move || {
-            crate::modules::proxy_db::get_logs(limit)
-        }).await;
+        let db_result =
+            tokio::task::spawn_blocking(move || crate::modules::proxy_db::get_logs(limit)).await;
 
         match db_result {
             Ok(Ok(logs)) => logs,
@@ -207,9 +197,7 @@ impl ProxyMonitor {
     }
 
     pub async fn get_stats(&self) -> ProxyStats {
-        let db_result = tokio::task::spawn_blocking(|| {
-            crate::modules::proxy_db::get_stats()
-        }).await;
+        let db_result = tokio::task::spawn_blocking(|| crate::modules::proxy_db::get_stats()).await;
 
         match db_result {
             Ok(Ok(stats)) => stats,
@@ -223,7 +211,7 @@ impl ProxyMonitor {
             }
         }
     }
-    
+
     pub async fn get_logs_filtered(
         &self,
         page: usize,
@@ -237,14 +225,15 @@ impl ProxyMonitor {
 
         let res = tokio::task::spawn_blocking(move || {
             crate::modules::proxy_db::get_logs_filtered(&search, errors_only, page_size, offset)
-        }).await;
+        })
+        .await;
 
         match res {
             Ok(r) => r,
             Err(e) => Err(format!("Spawn blocking failed: {}", e)),
         }
     }
-    
+
     pub async fn clear(&self) {
         let mut logs = self.logs.write().await;
         logs.clear();
@@ -255,6 +244,7 @@ impl ProxyMonitor {
             if let Err(e) = crate::modules::proxy_db::clear_logs() {
                 tracing::error!("Failed to clear logs in DB: {}", e);
             }
-        }).await;
+        })
+        .await;
     }
 }

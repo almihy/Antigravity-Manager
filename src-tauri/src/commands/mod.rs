@@ -1,5 +1,6 @@
 use crate::models::{Account, AppConfig, QuotaData};
 use crate::modules;
+use std::path::{Path, PathBuf};
 use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
@@ -15,11 +16,44 @@ pub mod security;
 pub mod proxy_pool;
 // 导出 user_token 命令
 pub mod user_token;
+// 导出 patch 命令
+pub mod patch;
+pub use patch::*;
 
 /// 列出所有账号
 #[tauri::command]
-pub async fn list_accounts() -> Result<Vec<Account>, String> {
-    modules::list_accounts()
+pub async fn list_accounts(
+    proxy_state: tauri::State<'_, crate::commands::proxy::ProxyServiceState>,
+) -> Result<Vec<Account>, String> {
+    let mut accounts = tokio::task::spawn_blocking(move || modules::list_accounts())
+        .await
+        .unwrap_or_else(|_| Err("Task panicked".to_string()))?;
+
+    // [FIX] Blend in-memory TokenManager rate limit status into the UI quota display
+    let instance_lock = proxy_state.instance.read().await;
+    if let Some(instance) = instance_lock.as_ref() {
+        for account in &mut accounts {
+            if let Some(reset_secs) = instance
+                .token_manager
+                .get_rate_limit_reset_seconds(&account.id)
+            {
+                if reset_secs > 0 {
+                    if let Some(ref mut quota_data) = account.quota {
+                        for model in &mut quota_data.models {
+                            model.percentage = 0;
+                            model.reset_time =
+                                (chrono::Utc::now().timestamp() + reset_secs as i64).to_string();
+                        }
+                        // Optionally, add a UI flag if we want it to look completely blocked
+                        // quota_data.is_forbidden = true;
+                        // quota_data.forbidden_reason = Some(format!("Quota exhausted or rate limited (resets in {}s)", reset_secs));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(accounts)
 }
 
 /// 添加账号
@@ -124,7 +158,9 @@ pub async fn switch_account(
         crate::modules::integration::SystemManager::Desktop(app.clone()),
     );
 
-    service.switch_account(&account_id, target_ide.as_deref()).await?;
+    service
+        .switch_account(&account_id, target_ide.as_deref())
+        .await?;
 
     // 同步托盘
     crate::modules::tray::update_tray_menus(&app);
@@ -158,7 +194,9 @@ use crate::models::AccountExportResponse;
 
 #[tauri::command]
 pub async fn export_accounts(account_ids: Vec<String>) -> Result<AccountExportResponse, String> {
-    modules::account::export_accounts_by_ids(&account_ids)
+    tokio::task::spawn_blocking(move || modules::account::export_accounts_by_ids(&account_ids))
+        .await
+        .unwrap_or_else(|_| Err("Task panicked".to_string()))
 }
 
 /// 内部辅助功能：在添加或导入账号后自动刷新一次额度
@@ -196,7 +234,7 @@ pub async fn fetch_account_quota(
         modules::load_account(&account_id).map_err(crate::error::AppError::Account)?;
 
     // 使用带重试的查询 (Shared logic)
-    let quota = modules::account::fetch_quota_with_retry(&mut account).await?;
+    let mut quota = modules::account::fetch_quota_with_retry(&mut account).await?;
 
     // 4. 更新账号配额
     modules::update_account_quota(&account_id, quota.clone())
@@ -208,6 +246,20 @@ pub async fn fetch_account_quota(
     let instance_lock = proxy_state.instance.read().await;
     if let Some(instance) = instance_lock.as_ref() {
         let _ = instance.token_manager.reload_account(&account_id).await;
+
+        // [FIX] Blend TokenManager lockout state
+        if let Some(reset_secs) = instance
+            .token_manager
+            .get_rate_limit_reset_seconds(&account_id)
+        {
+            if reset_secs > 0 {
+                for model in &mut quota.models {
+                    model.percentage = 0;
+                    model.reset_time =
+                        (chrono::Utc::now().timestamp() + reset_secs as i64).to_string();
+                }
+            }
+        }
     }
 
     Ok(quota)
@@ -377,6 +429,16 @@ pub async fn save_config(
         crate::proxy::update_global_system_prompt_config(config.proxy.global_system_prompt.clone());
         // [NEW] 更新全局图像思维模式配置
         crate::proxy::update_image_thinking_mode(config.proxy.image_thinking_mode.clone());
+        // [NEW] 更新全局压缩等级配置
+        crate::proxy::config::update_global_compression_level(
+            config.proxy.experimental.compression_level.clone(),
+            config.proxy.experimental.enable_usage_scaling,
+        );
+        crate::proxy::config::update_global_thresholds(
+            config.proxy.experimental.context_compression_threshold_l1,
+            config.proxy.experimental.context_compression_threshold_l2,
+            config.proxy.experimental.context_compression_threshold_l3,
+        );
         // 更新代理池配置
         instance
             .axum_server
@@ -396,7 +458,10 @@ pub async fn save_config(
 // --- OAuth 命令 ---
 
 #[tauri::command]
-pub async fn start_oauth_login(app_handle: tauri::AppHandle, oauth_client_key: Option<String>) -> Result<Account, String> {
+pub async fn start_oauth_login(
+    app_handle: tauri::AppHandle,
+    oauth_client_key: Option<String>,
+) -> Result<Account, String> {
     modules::logger::log_info("开始 OAuth 授权流程...");
     let service = modules::account_service::AccountService::new(
         crate::modules::integration::SystemManager::Desktop(app_handle.clone()),
@@ -440,7 +505,10 @@ pub async fn complete_oauth_login(app_handle: tauri::AppHandle) -> Result<Accoun
 
 /// 预生成 OAuth 授权链接 (不打开浏览器)
 #[tauri::command]
-pub async fn prepare_oauth_url(app_handle: tauri::AppHandle, oauth_client_key: Option<String>) -> Result<String, String> {
+pub async fn prepare_oauth_url(
+    app_handle: tauri::AppHandle,
+    oauth_client_key: Option<String>,
+) -> Result<String, String> {
     let service = modules::account_service::AccountService::new(
         crate::modules::integration::SystemManager::Desktop(app_handle.clone()),
     );
@@ -461,7 +529,8 @@ pub async fn submit_oauth_code(code: String, state: Option<String>) -> Result<()
 }
 
 #[tauri::command]
-pub async fn list_oauth_clients() -> Result<Vec<crate::modules::oauth::OAuthClientDescriptor>, String> {
+pub async fn list_oauth_clients(
+) -> Result<Vec<crate::modules::oauth::OAuthClientDescriptor>, String> {
     crate::modules::oauth::list_oauth_clients()
 }
 
@@ -501,7 +570,7 @@ pub async fn import_from_db(
     proxy_state: tauri::State<'_, crate::commands::proxy::ProxyServiceState>,
 ) -> Result<Account, String> {
     // 同步函数包装为 async
-    let mut account = modules::migration::import_from_db().await?;
+    let mut account = modules::migration::import_from_db(None).await?;
 
     // 既然是从数据库导入（即 IDE 当前账号），自动将其设为 Manager 的当前账号
     let account_id = account.id.clone();
@@ -550,8 +619,16 @@ pub async fn sync_account_from_db(
     app: tauri::AppHandle,
     proxy_state: tauri::State<'_, crate::commands::proxy::ProxyServiceState>,
 ) -> Result<Option<Account>, String> {
+    // Check if the current target is one we should not sync (like agy CLI)
+    let index = modules::account::load_account_index()?;
+    let current_target = index.current_target_ide.as_deref();
+    if current_target == Some("agy") {
+        modules::logger::log_info("Auto-sync skipped: current target is agy CLI");
+        return Ok(None);
+    }
+
     // 1. 获取 DB 中的 Refresh Token
-    let db_refresh_token = match modules::migration::get_refresh_token_from_db() {
+    let db_refresh_token = match modules::migration::get_refresh_token_from_db(current_target) {
         Ok(token) => token,
         Err(e) => {
             modules::logger::log_info(&format!("自动同步跳过: {}", e));
@@ -578,17 +655,45 @@ pub async fn sync_account_from_db(
     }
 
     // 4. 执行完整导入
-    let account = import_from_db(app, proxy_state).await?;
+    let mut account = modules::migration::import_from_db(current_target).await?;
+
+    // 既然是从数据库导入，自动将其设为 Manager 的当前账号并保留当前 target
+    let account_id = account.id.clone();
+    modules::account::set_current_account_id_with_target(&account_id, current_target)?;
+
+    // 自动触发刷新额度
+    let _ = internal_refresh_account_quota(&app, &mut account).await;
+
+    // 刷新托盘图标展示
+    crate::modules::tray::update_tray_menus(&app);
+
+    // Reload token pool
+    let _ = crate::commands::proxy::reload_proxy_accounts(proxy_state).await;
+
     Ok(Some(account))
 }
 
-fn validate_path(path: &str) -> Result<(), String> {
-    if path.contains("..") {
-        return Err("非法路径: 不允许目录遍历".to_string());
+fn resolve_existing_or_parent(path: &Path) -> Result<PathBuf, String> {
+    if path.exists() {
+        return path
+            .canonicalize()
+            .map_err(|e| format!("failed_to_resolve_path: {}", e));
     }
 
-    // 检查是否指向系统敏感路径 (基础黑名单)
-    let lower_path = path.to_lowercase();
+    let parent = path
+        .parent()
+        .ok_or_else(|| "invalid_path: missing parent directory".to_string())?;
+    let canonical_parent = parent
+        .canonicalize()
+        .map_err(|e| format!("failed_to_resolve_parent: {}", e))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| "invalid_path: missing file name".to_string())?;
+    Ok(canonical_parent.join(file_name))
+}
+
+fn is_sensitive_path(path: &Path) -> bool {
+    let lower = path.to_string_lossy().to_ascii_lowercase();
     let sensitive_prefixes = [
         "/etc/",
         "/var/spool/cron",
@@ -597,30 +702,62 @@ fn validate_path(path: &str) -> Result<(), String> {
         "/sys/",
         "/dev/",
         "c:\\windows",
+        "c:\\program files",
+        "c:\\program files (x86)",
         "c:\\users\\administrator",
         "c:\\pagefile.sys",
     ];
 
-    for prefix in sensitive_prefixes {
-        if lower_path.starts_with(prefix) {
-            return Err(format!("安全拒绝: 禁止访问系统敏感路径 ({})", prefix));
+    sensitive_prefixes
+        .iter()
+        .any(|prefix| lower == *prefix || lower.starts_with(prefix))
+}
+
+fn validate_user_json_path(path: &str, must_exist: bool) -> Result<PathBuf, String> {
+    let requested = PathBuf::from(path);
+    if requested.as_os_str().is_empty() {
+        return Err("invalid_path: empty path".to_string());
+    }
+    if !requested.is_absolute() {
+        return Err("invalid_path: absolute path is required".to_string());
+    }
+
+    let resolved = resolve_existing_or_parent(&requested)?;
+    if is_sensitive_path(&resolved) {
+        return Err("security_denied: sensitive system path is not allowed".to_string());
+    }
+
+    let is_json = resolved
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("json"))
+        .unwrap_or(false);
+    if !is_json {
+        return Err("invalid_path: only .json files are allowed".to_string());
+    }
+
+    if must_exist {
+        let metadata = std::fs::metadata(&resolved)
+            .map_err(|e| format!("failed_to_read_file_metadata: {}", e))?;
+        if !metadata.is_file() {
+            return Err("invalid_path: expected a regular file".to_string());
         }
     }
 
-    Ok(())
+    Ok(resolved)
 }
 
 /// 保存文本文件 (绕过前端 Scope 限制)
 #[tauri::command]
 pub async fn save_text_file(path: String, content: String) -> Result<(), String> {
-    validate_path(&path)?;
+    let path = validate_user_json_path(&path, false)?;
     std::fs::write(&path, content).map_err(|e| format!("写入文件失败: {}", e))
 }
 
 /// 读取文本文件 (绕过前端 Scope 限制)
 #[tauri::command]
 pub async fn read_text_file(path: String) -> Result<String, String> {
-    validate_path(&path)?;
+    let path = validate_user_json_path(&path, true)?;
     std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))
 }
 
@@ -728,6 +865,27 @@ pub async fn get_antigravity_path(bypass_config: Option<bool>) -> Result<String,
     }
 }
 
+/// 获取 Antigravity CLI (agy) 可执行文件路径
+#[tauri::command]
+pub async fn get_antigravity_cli_path(bypass_config: Option<bool>) -> Result<String, String> {
+    // 1. 优先从配置查询 (除非明确要求绕过)
+    if bypass_config != Some(true) {
+        if let Ok(config) = crate::modules::config::load_app_config() {
+            if let Some(path) = config.antigravity_cli_executable {
+                if std::path::Path::new(&path).exists() {
+                    return Ok(path);
+                }
+            }
+        }
+    }
+
+    // 2. 执行实时探测
+    match crate::modules::process::get_antigravity_cli_executable_path() {
+        Some(path) => Ok(path.to_string_lossy().to_string()),
+        None => Err("未找到 Antigravity CLI (agy) 安装路径".to_string()),
+    }
+}
+
 /// 获取 Antigravity 启动参数
 #[tauri::command]
 pub async fn get_antigravity_args() -> Result<Vec<String>, String> {
@@ -760,11 +918,18 @@ pub async fn update_last_check_time() -> Result<(), String> {
     crate::modules::update_checker::update_last_check_time()
 }
 
-
 /// 检测是否通过 Homebrew Cask 安装
 #[tauri::command]
 pub async fn check_homebrew_installation() -> Result<bool, String> {
     Ok(crate::modules::update_checker::is_homebrew_installed())
+}
+
+/// 检测是否以 AppImage 方式运行（Linux 专用）
+/// Tauri 的原生更新器在 Linux 上只支持 AppImage，
+/// RPM/DEB 安装的用户不应触发原生自动更新以避免 ENOEXEC 错误。
+#[tauri::command]
+pub async fn check_appimage_installation() -> Result<bool, String> {
+    Ok(crate::modules::update_checker::is_appimage_running())
 }
 
 /// 通过 Homebrew Cask 升级应用
@@ -773,7 +938,6 @@ pub async fn brew_upgrade_cask() -> Result<String, String> {
     modules::logger::log_info("收到前端触发的 Homebrew 升级请求");
     crate::modules::update_checker::brew_upgrade_cask().await
 }
-
 
 /// 获取更新设置
 #[tauri::command]
@@ -1029,4 +1193,29 @@ pub async fn get_token_stats_account_trend_daily(
     days: i64,
 ) -> Result<Vec<crate::modules::token_stats::AccountTrendPoint>, String> {
     crate::modules::token_stats::get_account_trend_daily(days)
+}
+
+#[tauri::command]
+pub async fn query_transit_info(url: String, key: String) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let response = client
+        .get(&url)
+        .bearer_auth(key)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let status = response.status();
+    let text = response.text().await.map_err(|e| e.to_string())?;
+
+    if status.is_success() {
+        Ok(text)
+    } else {
+        Err(format!("HTTP {}: {}", status, text))
+    }
 }

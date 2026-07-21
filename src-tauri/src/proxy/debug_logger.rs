@@ -1,7 +1,7 @@
-use serde_json::Value;
-use tokio::fs;
-use std::path::PathBuf;
 use futures::StreamExt;
+use serde_json::Value;
+use std::path::PathBuf;
+use tokio::fs;
 
 use crate::proxy::config::DebugLoggingConfig;
 
@@ -21,13 +21,17 @@ fn resolve_output_dir(cfg: &DebugLoggingConfig) -> Option<PathBuf> {
     None
 }
 
+fn resolve_exchange_output_dir(cfg: &DebugLoggingConfig) -> Option<PathBuf> {
+    resolve_output_dir(cfg).map(|dir| dir.join("debug_exchanges"))
+}
+
 pub async fn write_debug_payload(
     cfg: &DebugLoggingConfig,
     trace_id: Option<&str>,
     prefix: &str,
     payload: &Value,
 ) {
-    if !cfg.enabled {
+    if !is_enabled(cfg) {
         return;
     }
 
@@ -59,8 +63,46 @@ pub async fn write_debug_payload(
     }
 }
 
+pub async fn write_exchange_payload(
+    cfg: &DebugLoggingConfig,
+    trace_id: Option<&str>,
+    prefix: &str,
+    payload: &Value,
+) {
+    if !is_enabled(cfg) {
+        return;
+    }
+
+    let output_dir = match resolve_exchange_output_dir(cfg) {
+        Some(dir) => dir,
+        None => {
+            tracing::warn!("[Debug-Exchange] Enabled but output_dir is not available.");
+            return;
+        }
+    };
+
+    if let Err(e) = fs::create_dir_all(&output_dir).await {
+        tracing::warn!("[Debug-Exchange] Failed to create output dir: {}", e);
+        return;
+    }
+
+    let filename = build_filename(prefix, trace_id);
+    let path = output_dir.join(filename);
+
+    match serde_json::to_vec_pretty(payload) {
+        Ok(bytes) => {
+            if let Err(e) = fs::write(&path, bytes).await {
+                tracing::warn!("[Debug-Exchange] Failed to write file: {}", e);
+            }
+        }
+        Err(e) => {
+            tracing::warn!("[Debug-Exchange] Failed to serialize payload: {}", e);
+        }
+    }
+}
+
 pub fn is_enabled(cfg: &DebugLoggingConfig) -> bool {
-    cfg.enabled
+    cfg.enabled || crate::modules::log_bridge::is_log_bridge_enabled()
 }
 
 /// 解析 SSE 流式数据，提取 thinking 和正文内容
@@ -81,23 +123,24 @@ fn parse_sse_stream(raw: &str) -> (String, String) {
         // 尝试解析 JSON
         if let Ok(parsed) = serde_json::from_str::<Value>(json_str) {
             // Gemini/v1internal 格式: response.candidates[0].content.parts[0]
-            if let Some(candidates) = parsed.get("response")
+            if let Some(candidates) = parsed
+                .get("response")
                 .and_then(|r| r.get("candidates"))
                 .and_then(|c| c.as_array())
             {
                 for candidate in candidates {
-                    if let Some(parts) = candidate.get("content")
+                    if let Some(parts) = candidate
+                        .get("content")
                         .and_then(|c| c.get("parts"))
                         .and_then(|p| p.as_array())
                     {
                         for part in parts {
-                            let text = part.get("text")
-                                .and_then(|t| t.as_str())
-                                .unwrap_or("");
-                            let is_thought = part.get("thought")
+                            let text = part.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                            let is_thought = part
+                                .get("thought")
                                 .and_then(|t| t.as_bool())
                                 .unwrap_or(false);
-                            
+
                             if !text.is_empty() {
                                 if is_thought {
                                     thinking_parts.push(text.to_string());
@@ -154,13 +197,14 @@ where
 
         let raw_text = String::from_utf8_lossy(&collected).to_string();
         let (thinking_content, response_content) = parse_sse_stream(&raw_text);
-        
+
         let mut payload = serde_json::json!({
-            "kind": "upstream_response",
+            "kind": prefix,
             "trace_id": trace_id,
             "meta": meta,
+            "raw_stream": raw_text,
         });
-        
+
         // 只有在有内容时才添加对应字段
         if !thinking_content.is_empty() {
             payload["thinking_content"] = serde_json::Value::String(thinking_content);
@@ -169,7 +213,7 @@ where
             payload["response_content"] = serde_json::Value::String(response_content);
         }
 
-        write_debug_payload(&cfg, Some(&payload["trace_id"].as_str().unwrap_or("unknown")), prefix, &payload).await;
+        write_exchange_payload(&cfg, Some(&payload["trace_id"].as_str().unwrap_or("unknown")), prefix, &payload).await;
     };
 
     Box::pin(wrapped)

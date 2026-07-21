@@ -44,15 +44,18 @@ import {
     Clock,
     Bot,
     Repeat2,
+    Terminal,
 } from 'lucide-react';
-import { Account } from '../../types/account';
+import type { Account, ModelQuota } from '../../types/account';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../../utils/cn';
 
 import { useConfigStore } from '../../stores/useConfigStore';
 import { QuotaItem } from './QuotaItem';
-import { MODEL_CONFIG, sortModels } from '../../config/modelConfig';
+import { MODEL_CONFIG, sortModels, resolveQuotaModels, ensurePinnedImageSelector } from '../../config/modelConfig';
+import { categorizeModel, getModelProtectionKey } from '../../utils/modelCategory';
 import { getValidationBlockedStatusLabel } from './accountValidationStatus';
+import { getLiveLimitForModel } from '../../utils/liveLimit';
 
 // ============================================================================
 // 类型定义
@@ -124,72 +127,28 @@ interface AccountRowContentProps {
 
 
 
-// ============================================================================
-// 模型分组配置
-// ============================================================================
-
-const MODEL_GROUPS = {
-    CLAUDE: [
-        'claude-opus-4-6-thinking',
-        'claude'
-    ],
-    GEMINI_PRO: [
-        'gemini-3.1-pro-high',
-        'gemini-3.1-pro-low',
-        'gemini-3.1-pro-preview',
-        'gemini-3-pro-high',
-        'gemini-3-pro-low',
-        'gemini-3-pro-preview'
-    ],
-    GEMINI_FLASH: [
-        'gemini-3-flash'
-    ]
-};
-
-const MODEL_ID_ALIASES: Record<string, string[]> = {
-    'gemini-3-pro-high': ['gemini-3-pro-high', 'gemini-3.1-pro-high'],
-    'gemini-3-pro-low': ['gemini-3-pro-low', 'gemini-3.1-pro-low'],
-    'gemini-3-pro-preview': ['gemini-3-pro-preview', 'gemini-3.1-pro-preview'],
-    'gemini-3.1-pro-high': ['gemini-3.1-pro-high', 'gemini-3-pro-high'],
-    'gemini-3.1-pro-low': ['gemini-3.1-pro-low', 'gemini-3-pro-low'],
-    'gemini-3.1-pro-preview': ['gemini-3.1-pro-preview', 'gemini-3-pro-preview'],
-};
-
-function getModelAliases(modelId: string): string[] {
-    return MODEL_ID_ALIASES[modelId] || [modelId];
-}
-
 function isModelProtected(protectedModels: string[] | undefined, modelName: string): boolean {
     if (!protectedModels || protectedModels.length === 0) return false;
     const lowerName = modelName.toLowerCase();
 
-    // Helper to check if any model in the group is protected
-    const isGroupProtected = (group: string[]) => {
-        return group.some(m => protectedModels.includes(m));
-    };
-
-    // UI Column Keys Mapping (for backward compatibility with hardcoded UI calls)
-    if (lowerName === 'gemini-pro') return isGroupProtected(MODEL_GROUPS.GEMINI_PRO);
-    if (lowerName === 'gemini-flash') return isGroupProtected(MODEL_GROUPS.GEMINI_FLASH);
-    if (lowerName === 'claude-sonnet') return isGroupProtected(MODEL_GROUPS.CLAUDE);
-
-    // 1. Gemini Pro Group
-    if (MODEL_GROUPS.GEMINI_PRO.some(m => lowerName === m)) {
-        return isGroupProtected(MODEL_GROUPS.GEMINI_PRO);
+    if (lowerName === 'gemini-pro') {
+        return protectedModels.some((model) =>
+            categorizeModel(model) === 'gemini-pro' && getModelProtectionKey(model) === 'gemini-3-pro-high',
+        );
+    }
+    if (lowerName === 'gemini-flash') {
+        return protectedModels.some((model) =>
+            categorizeModel(model) === 'gemini-flash' && getModelProtectionKey(model) === 'gemini-3-flash',
+        );
+    }
+    if (lowerName === 'claude-sonnet') {
+        return protectedModels.some((model) =>
+            categorizeModel(model) === 'claude' && getModelProtectionKey(model) === 'claude',
+        );
     }
 
-    // 2. Claude Group
-    if (MODEL_GROUPS.CLAUDE.some(m => lowerName === m)) {
-        return isGroupProtected(MODEL_GROUPS.CLAUDE);
-    }
-
-    // 3. Gemini Flash Group
-    if (MODEL_GROUPS.GEMINI_FLASH.some(m => lowerName === m)) {
-        return isGroupProtected(MODEL_GROUPS.GEMINI_FLASH);
-    }
-
-    // 兜底直接检查 (Strict check for exact match or normalized ID)
-    return protectedModels.includes(lowerName);
+    const protectionKey = getModelProtectionKey(lowerName);
+    return protectionKey ? protectedModels.includes(protectionKey) : false;
 }
 
 // ============================================================================
@@ -341,7 +300,9 @@ function AccountRowContent({
     // 使用统一的模型配置
 
     // 获取要显示的模型列表
-    const pinnedModels = config?.pinned_quota_models?.models || Object.keys(MODEL_CONFIG);
+    const pinnedModels = ensurePinnedImageSelector(
+        config?.pinned_quota_models?.models || Object.keys(MODEL_CONFIG),
+    );
 
     // 根据 show_all 状态决定显示哪些模型
     const uniqueLabels = new Set<string>();
@@ -357,19 +318,24 @@ function AccountRowContent({
                     data: m
                 };
             })
-            : pinnedModels.map(modelId => {
-                const m = account.quota?.models.find(m => m.name === modelId || getModelAliases(modelId).includes(m.name.toLowerCase()));
-                const config = MODEL_CONFIG[modelId];
-                if (!config && !m) return null; // Safe guard for unknown models that aren't fetched
-                const label = m?.display_name || (config?.i18nKey ? t(config.i18nKey) : (config?.shortLabel || config?.label || modelId));
+            : resolveQuotaModels(account.quota?.models, pinnedModels).map(sel => {
+                const selectorConfig = MODEL_CONFIG[sel.selectorId.toLowerCase()];
+                const resolvedConfig = sel.model ? MODEL_CONFIG[sel.model.name.toLowerCase()] : undefined;
+                if (!selectorConfig && !sel.model) return null;
+                const label = sel.model?.display_name
+                    || (resolvedConfig?.shortLabel || resolvedConfig?.label)
+                    || (selectorConfig?.shortLabel || selectorConfig?.label)
+                    || (resolvedConfig?.i18nKey ? t(resolvedConfig.i18nKey) : undefined)
+                    || (selectorConfig?.i18nKey ? t(selectorConfig.i18nKey) : undefined)
+                    || sel.selectorId;
                 return {
-                    id: modelId,
-                    label: label,
-                    protectedKey: config?.protectedKey || modelId,
-                    data: m
+                    id: sel.model?.name.toLowerCase() ?? sel.selectorId.toLowerCase(),
+                    label,
+                    protectedKey: getModelProtectionKey(sel.model?.name ?? sel.selectorId) ?? resolvedConfig?.protectedKey ?? selectorConfig?.protectedKey ?? sel.selectorId,
+                    data: sel.model,
                 };
-            }).filter(Boolean) as any[]
-        ).filter(m => {
+            }).filter((item): item is { id: string; label: string; protectedKey: string; data: ModelQuota | undefined } => item !== null)
+    ).filter(m => {
             // 过滤特定的 Claude/Gemini 思考变体 (在列表页隐藏)
             const isHiddenThinking = m.id.includes('thinking');
 
@@ -542,7 +508,7 @@ function AccountRowContent({
                     </div>
                 ) : (
                     <div className={cn(
-                        "grid gap-x-4 gap-y-1 py-0",
+                        "grid gap-x-2 gap-y-1 py-0",
                         displayModels.length === 1 ? "grid-cols-1" : "grid-cols-2"
                     )}>
                         {displayModels.map((model) => {
@@ -555,6 +521,7 @@ function AccountRowContent({
                                     percentage={modelData?.percentage || 0}
                                     resetTime={modelData?.reset_time}
                                     isProtected={isModelProtected(account.protected_models, model.protectedKey)}
+                                    liveLimit={getLiveLimitForModel(account, model.id, model.protectedKey)}
                                     Icon={MODEL_CONFIG[model.id]?.Icon || Bot}
                                 />
                             );
@@ -584,7 +551,7 @@ function AccountRowContent({
                     : "bg-white dark:bg-base-100",
                 !isCurrent && "group-hover:bg-gray-50 dark:group-hover:bg-base-200"
             )}>
-                <div className="flex flex-wrap items-center justify-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity max-w-[180px] mx-auto">
+                <div className="flex flex-wrap items-center justify-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity max-w-[220px] mx-auto">
                     <button
                         className="p-1.5 text-gray-500 dark:text-gray-400 hover:text-sky-600 dark:hover:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-900/30 rounded-lg transition-all"
                         onClick={(e) => { e.stopPropagation(); onViewDetails(); }}
@@ -629,6 +596,14 @@ function AccountRowContent({
                         disabled={isSwitching || isDisabled}
                     >
                         <Repeat2 className={`w-3.5 h-3.5 ${isSwitching ? 'animate-spin' : ''}`} />
+                    </button>
+                    <button
+                        className={`p-1.5 text-gray-500 dark:text-gray-400 rounded-lg transition-all ${(isSwitching || isDisabled) ? 'bg-blue-50 dark:bg-blue-900/10 text-blue-600 dark:text-blue-400 cursor-not-allowed' : 'hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/30'}`}
+                        onClick={(e) => { e.stopPropagation(); onSwitch('agy'); }}
+                        title={isDisabled ? t('accounts.disabled_tooltip') : (isSwitching ? t('common.loading') : t('accounts.switch_to_agy', '切换到 Antigravity CLI (agy)'))}
+                        disabled={isSwitching || isDisabled}
+                    >
+                        <Terminal className={`w-3.5 h-3.5 ${isSwitching ? 'animate-spin' : ''}`} />
                     </button>
                     {onWarmup && (
                         <button
@@ -780,11 +755,11 @@ function AccountTable({
                                 />
                             </th>
                             <th className="px-2 py-1 text-left rtl:text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider w-[300px] whitespace-nowrap">{t('accounts.table.email')}</th>
-                            <th className="px-2 py-1 text-left rtl:text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider min-w-[380px] whitespace-nowrap">
+                            <th className="px-2 py-1 text-left rtl:text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider min-w-[340px] whitespace-nowrap">
                                 {t('accounts.table.quota')}
                             </th>
                             <th className="px-2 py-1 text-left rtl:text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider w-[90px] whitespace-nowrap">{t('accounts.table.last_used')}</th>
-                            <th className="px-2 py-1 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap sticky right-0 w-[180px] bg-gray-50 dark:bg-base-200 z-20 shadow-[-12px_0_12px_-12px_rgba(0,0,0,0.1)] dark:shadow-[-12px_0_12px_-12px_rgba(255,255,255,0.05)] text-center">{t('accounts.table.actions')}</th>
+                            <th className="px-2 py-1 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider whitespace-nowrap sticky right-0 w-[220px] bg-gray-50 dark:bg-base-200 z-20 shadow-[-12px_0_12px_-12px_rgba(0,0,0,0.1)] dark:shadow-[-12px_0_12px_-12px_rgba(255,255,255,0.05)] text-center">{t('accounts.table.actions')}</th>
                         </tr >
                     </thead >
                     <SortableContext items={accountIds} strategy={verticalListSortingStrategy}>

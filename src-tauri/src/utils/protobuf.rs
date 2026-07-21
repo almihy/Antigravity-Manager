@@ -109,7 +109,7 @@ pub fn find_field(data: &[u8], target_field: u32) -> Result<Option<Vec<u8>>, Str
 }
 
 /// Create OAuthTokenInfo (Field 6)
-/// 
+///
 /// Structure:
 /// message OAuthTokenInfo {
 ///     optional string access_token = 1;
@@ -148,14 +148,14 @@ pub fn create_oauth_field(access_token: &str, refresh_token: &str, expiry: i64) 
 
     // Field 4: expiry (Nested Timestamp message, wire_type = 2)
     // Timestamp message contains: Field 1: seconds (int64, wire_type = 0)
-    let timestamp_tag = (1 << 3) | 0;  // Field 1, varint
+    let timestamp_tag = (1 << 3) | 0; // Field 1, varint
     let timestamp_msg = {
         let mut m = encode_varint(timestamp_tag);
         m.extend(encode_varint(expiry as u64));
         m
     };
-    
-    let tag4 = (4 << 3) | 2;  // Field 4, length-delimited
+
+    let tag4 = (4 << 3) | 2; // Field 4, length-delimited
     let field4 = {
         let mut f = encode_varint(tag4);
         f.extend(encode_varint(timestamp_msg.len() as u64));
@@ -174,7 +174,6 @@ pub fn create_oauth_field(access_token: &str, refresh_token: &str, expiry: i64) 
 
     field6
 }
-
 
 /// Create Email (Field 2)
 pub fn create_email_field(email: &str) -> Vec<u8> {
@@ -219,7 +218,7 @@ pub fn create_oauth_info(
     // 智能纠正 is_gcp_tos (兼容性核心逻辑)
     // 逻辑：如果确定是个人账号（通过邮件后缀），或者被明确要求修正，则强制关闭 Field 6
     if let Some(email_str) = email {
-        let is_personal = email_str.to_lowercase().ends_with("@gmail.com") 
+        let is_personal = email_str.to_lowercase().ends_with("@gmail.com")
             || email_str.to_lowercase().ends_with("@outlook.com")
             || email_str.to_lowercase().ends_with("@hotmail.com")
             || email_str.to_lowercase().ends_with("@qq.com")
@@ -236,26 +235,26 @@ pub fn create_oauth_info(
 
     // Field 1: access_token
     let field1 = encode_string_field(1, access_token);
-    
+
     // Field 2: token_type = "Bearer"
     let field2 = encode_string_field(2, "Bearer");
-    
+
     // Field 3: refresh_token
     let field3 = encode_string_field(3, refresh_token);
-    
+
     // Field 4: expiry (嵌套的 Timestamp 消息)
     // message Timestamp { int64 seconds = 1; int32 nanos = 2; }
     let seconds_tag = (1 << 3) | 0;
     let mut timestamp_msg = encode_varint(seconds_tag);
     timestamp_msg.extend(encode_varint(expiry as u64));
-    
+
     // 添加 Field 2: nanos (0)
     let nanos_tag = (2 << 3) | 0;
     timestamp_msg.extend(encode_varint(nanos_tag));
     timestamp_msg.extend(encode_varint(0));
-    
+
     let field4 = encode_len_delim_field(4, &timestamp_msg);
-    
+
     // Field 5: id_token (如果存在)
     let field5 = id_token.map(|it| encode_string_field(5, it));
 
@@ -282,13 +281,13 @@ fn decode_legacy_base64_payload_if_needed(payload: Vec<u8>) -> Vec<u8> {
 
     let looks_like_legacy_base64 = payload.len() % 4 == 0
         && !payload.is_empty()
-        && payload
-            .iter()
-            .all(|byte| matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' | b'='));
+        && payload.iter().all(
+            |byte| matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' | b'='),
+        );
 
     if !looks_like_legacy_base64 {
         return payload;
-}
+    }
 
     let Ok(decoded) = general_purpose::STANDARD.decode(&payload) else {
         return payload;
@@ -357,7 +356,8 @@ pub fn decode_unified_state_entry(outer_b64: &str) -> Result<(String, Vec<u8>), 
         .decode(outer_b64)
         .map_err(|e| format!("Outer Base64 decoding failed: {}", e))?;
 
-    decode_topic_row_payload(&outer_blob).or_else(|_| decode_legacy_unified_state_entry(&outer_blob))
+    decode_topic_row_payload(&outer_blob)
+        .or_else(|_| decode_legacy_unified_state_entry(&outer_blob))
 }
 
 /// 查找指定 protobuf varint 字段
@@ -392,4 +392,71 @@ pub fn create_string_value_payload(value: &str) -> Vec<u8> {
 /// 账号展示和会话绑定依赖名字和邮箱，因此这里写入最小身份信息即可。
 pub fn create_minimal_user_status_payload(email: &str) -> Vec<u8> {
     [encode_string_field(3, email), encode_string_field(7, email)].concat()
+}
+
+/// 创建 unified-state Topic.data entry。
+pub fn create_unified_topic_entry(sentinel_key: &str, payload: &[u8]) -> Vec<u8> {
+    use base64::{engine::general_purpose, Engine as _};
+    let row = encode_string_field(1, &general_purpose::STANDARD.encode(payload));
+    let entry = [
+        encode_string_field(1, sentinel_key),
+        encode_len_delim_field(2, &row),
+    ]
+    .concat();
+    encode_len_delim_field(1, &entry)
+}
+
+/// 从 Topic.data 中移除指定 map entry，保留同 topic 下其他 sentinel row。
+pub fn remove_unified_topic_entry(data: &[u8], target_key: &str) -> Result<Vec<u8>, String> {
+    let mut result = Vec::new();
+    let mut offset = 0;
+
+    while offset < data.len() {
+        let start_offset = offset;
+        let (tag, new_offset) = read_varint(data, offset)?;
+        let wire_type = (tag & 7) as u8;
+        let field_num = (tag >> 3) as u32;
+        let next_offset = skip_field(data, new_offset, wire_type)?;
+
+        let should_remove = if field_num == 1 && wire_type == 2 {
+            let (length, content_offset) = read_varint(data, new_offset)?;
+            let length = length as usize;
+            if content_offset + length > data.len() {
+                return Err("Topic.data entry 数据不完整".to_string());
+            }
+            let entry = &data[content_offset..content_offset + length];
+            unified_topic_entry_key(entry) == Some(target_key)
+        } else {
+            false
+        };
+
+        if !should_remove {
+            result.extend_from_slice(&data[start_offset..next_offset]);
+        }
+        offset = next_offset;
+    }
+
+    Ok(result)
+}
+
+fn unified_topic_entry_key(data: &[u8]) -> Option<&str> {
+    let mut offset = 0;
+    while offset < data.len() {
+        let (tag, new_offset) = read_varint(data, offset).ok()?;
+        let wire_type = (tag & 7) as u8;
+        let field_num = (tag >> 3) as u32;
+
+        if field_num == 1 && wire_type == 2 {
+            let (length, content_offset) = read_varint(data, new_offset).ok()?;
+            let length = length as usize;
+            if content_offset + length > data.len() {
+                return None;
+            }
+            return std::str::from_utf8(&data[content_offset..content_offset + length]).ok();
+        }
+
+        offset = skip_field(data, new_offset, wire_type).ok()?;
+    }
+
+    None
 }

@@ -46,12 +46,16 @@ pub fn get_antigravity_cache_paths() -> Vec<PathBuf> {
             let local_path = PathBuf::from(&local_app_data);
             paths.push(local_path.join("Google\\Antigravity"));
             paths.push(local_path.join("Antigravity\\Cache"));
+            // Standalone Antigravity IDE cache (Electron-based)
+            paths.push(local_path.join("Antigravity IDE\\Cache"));
         }
 
         // AppData cache
         if let Ok(app_data) = std::env::var("APPDATA") {
             let app_path = PathBuf::from(&app_data);
             paths.push(app_path.join("Antigravity\\Cache"));
+            // Standalone Antigravity IDE cache (Electron-based)
+            paths.push(app_path.join("Antigravity IDE\\Cache"));
         }
     }
 
@@ -152,7 +156,10 @@ pub fn clear_antigravity_cache(custom_paths: Option<Vec<String>>) -> Result<Clea
 
     for path in paths {
         if !path.exists() {
-            logger::log_info(&format!("Cache path does not exist, skipping: {}", path.display()));
+            logger::log_info(&format!(
+                "Cache path does not exist, skipping: {}",
+                path.display()
+            ));
             continue;
         }
 
@@ -160,7 +167,9 @@ pub fn clear_antigravity_cache(custom_paths: Option<Vec<String>>) -> Result<Clea
 
         match clear_directory(&path) {
             Ok(size) => {
-                result.cleared_paths.push(path.to_string_lossy().to_string());
+                result
+                    .cleared_paths
+                    .push(path.to_string_lossy().to_string());
                 result.total_size_freed += size;
                 logger::log_info(&format!(
                     "Cleared {}: {:.2} MB freed",

@@ -48,7 +48,6 @@ pub struct ThinkingConfig {
     pub effort: Option<String>, // "low", "high", or "max"
 }
 
-
 /// System Prompt
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -274,6 +273,7 @@ pub struct GeminiPart {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "thoughtSignature")]
+    #[serde(alias = "thought_signature")]
     pub thought_signature: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
