@@ -232,7 +232,10 @@ pub fn get_log_detail(log_id: &str) -> Result<ProxyRequestLog, String> {
 pub fn cleanup_old_logs(days: i64) -> Result<usize, String> {
     let conn = connect_db()?;
 
-    let cutoff_timestamp = chrono::Utc::now().timestamp() - (days * 24 * 3600);
+    // request_logs.timestamp is written in MILLISECONDS (see proxy::middleware::monitor),
+    // so the cutoff must be in milliseconds too. Using seconds here silently matched no
+    // rows, which is why retention never actually pruned anything.
+    let cutoff_timestamp = chrono::Utc::now().timestamp_millis() - (days * 24 * 3600 * 1000);
 
     let deleted = conn
         .execute(
@@ -241,8 +244,14 @@ pub fn cleanup_old_logs(days: i64) -> Result<usize, String> {
         )
         .map_err(|e| e.to_string())?;
 
-    // Execute VACUUM to reclaim disk space
-    conn.execute("VACUUM", []).map_err(|e| e.to_string())?;
+    // VACUUM rewrites the whole DB and needs transient free space of roughly its own
+    // size, so it is the first thing to fail on a nearly-full volume. Only run it when
+    // there is something to reclaim, and never let it mask a delete that succeeded.
+    if deleted > 0 {
+        if let Err(e) = conn.execute("VACUUM", []) {
+            tracing::warn!("Pruned {} old logs but VACUUM failed: {}", deleted, e);
+        }
+    }
 
     Ok(deleted)
 }

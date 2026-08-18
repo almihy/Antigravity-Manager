@@ -33,6 +33,51 @@ pub struct ProxyStats {
     pub error_count: u64,
 }
 
+/// Days of proxy request logs to keep on disk.
+const LOG_RETENTION_DAYS: i64 = 7;
+
+/// How often the retention sweep runs. Startup-only cleanup let the volume fill twice.
+const LOG_CLEANUP_INTERVAL_SECS: u64 = 6 * 60 * 60;
+
+/// ProxyMonitor::new() is called from more than one place (each guarded by a None check),
+/// so guard the ticker itself to guarantee exactly one sweep loop per process.
+static CLEANUP_TASK_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// Prune request logs older than LOG_RETENTION_DAYS, now and every interval thereafter.
+fn spawn_log_cleanup_task() {
+    if CLEANUP_TASK_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    tokio::spawn(async move {
+        let mut ticker =
+            tokio::time::interval(std::time::Duration::from_secs(LOG_CLEANUP_INTERVAL_SECS));
+        loop {
+            // The first tick resolves immediately, preserving the startup sweep.
+            ticker.tick().await;
+
+            let _ =
+                tokio::task::spawn_blocking(|| {
+                    match crate::modules::proxy_db::cleanup_old_logs(LOG_RETENTION_DAYS) {
+                        Ok(deleted) => {
+                            if deleted > 0 {
+                                tracing::info!(
+                                    "Auto cleanup: removed {} logs older than {} days",
+                                    deleted,
+                                    LOG_RETENTION_DAYS
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to cleanup old logs: {}", e);
+                        }
+                    }
+                })
+                .await;
+        }
+    });
+}
+
 pub struct ProxyMonitor {
     pub logs: RwLock<VecDeque<ProxyRequestLog>>,
     pub stats: RwLock<ProxyStats>,
@@ -48,19 +93,8 @@ impl ProxyMonitor {
             tracing::error!("Failed to initialize proxy DB: {}", e);
         }
 
-        // Auto cleanup old logs (keep last 30 days)
-        tokio::task::spawn_blocking(
-            move || match crate::modules::proxy_db::cleanup_old_logs(30) {
-                Ok(deleted) => {
-                    if deleted > 0 {
-                        tracing::info!("Auto cleanup: removed {} old logs (>30 days)", deleted);
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Failed to cleanup old logs: {}", e);
-                }
-            },
-        );
+        // Retention runs on a schedule, not just here at startup.
+        spawn_log_cleanup_task();
 
         Self {
             logs: RwLock::new(VecDeque::with_capacity(max_logs)),
